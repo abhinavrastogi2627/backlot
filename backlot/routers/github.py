@@ -1890,6 +1890,9 @@ async def list_issues(
     state: str = _state_param(_ISSUE_STATE_DESCRIPTION),
     sort: str = _enum_param("created", _ISSUE_SORT_DESCRIPTION, _ISSUE_ORDERING.sorts),
     direction: str = _enum_param("desc", _ISSUE_DIRECTION_DESCRIPTION, _DIRECTIONS),
+    labels: str = Query(
+        None, description="A list of comma separated label names. Example: `bug,ui,@high`"
+    ),
     page: PageParam = None,
     per_page: PageParam = None,
 ):
@@ -1917,6 +1920,16 @@ async def list_issues(
         for r in store.list_documents(conn, "github", repo, ids, limit=10_000, state=state_filter)
         if r["kind"] != "file"
     ]
+    # Measured on psf/requests, api.github.com, 2026-10-12: label
+    # names are case-insensitive, comma-separated names must all match,
+    # and the last repeated parameter is read. Spaces are part of a name.
+    if labels:
+        wanted = {name.lower() for name in labels.rstrip(",").split(",")}
+        all_rows = [
+            row
+            for row in all_rows
+            if wanted <= {name.lower() for name in store.jcol(row, "labels")}
+        ]
     sort, descending = _order(request, _ISSUE_ORDERING)
     all_rows = _ordered(
         all_rows, _issue_sort_keys(conn, repo, sort, ids), _ISSUE_ORDERING, sort, descending
@@ -1940,7 +1953,7 @@ async def list_issues(
     return _paged_by_cursor(
         request,
         len(all_rows),
-        _echo(request, state=state, **_sent(request, "sort", "direction")),
+        _echo(request, state=state, **_sent(request, "sort", "direction", "labels")),
         body,
         link_page,
         per_page,
