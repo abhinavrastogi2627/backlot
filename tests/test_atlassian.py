@@ -1147,8 +1147,8 @@ def test_confluence_single_space_get(client, admin_h):
         "operation": "read",
         "targetType": "space",
     }
-    # A missing space carries the key as sent in Confluence's two-member response, with and
-    # without the expansion. The same response applies to a space the caller cannot reach.
+    # No space has these keys, and each is refused naming it as `errors_atlassian.space_not_found`
+    # records, with the expansion and without it.
     for sent, named in (
         ("NOSUCH", "NOSUCH"),
         ("nosuch?expand=permissions", "nosuch"),
