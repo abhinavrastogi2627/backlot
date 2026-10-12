@@ -1760,6 +1760,19 @@ def _configuration_list(q, selector: str) -> Response:
     )
 
 
+# Real S3, us-east-1 (measured 2026-10-11), echoes these query values on an
+# object's GET and HEAD, including its 206. Names are case-sensitive; values
+# are percent-decoded, with empty values kept, and do not transform the bytes.
+_RESPONSE_HEADERS = {
+    "response-content-type": "Content-Type",
+    "response-content-language": "Content-Language",
+    "response-expires": "Expires",
+    "response-cache-control": "Cache-Control",
+    "response-content-disposition": "Content-Disposition",
+    "response-content-encoding": "Content-Encoding",
+}
+
+
 @router.api_route("/{bucket}/{key:path}", methods=["GET", "HEAD"])
 async def object_get(request: Request, bucket: str, key: str):
     """GetObject — the object's bytes, or its metadata headers alone for a HEAD.
@@ -1804,6 +1817,18 @@ async def object_get(request: Request, bucket: str, key: str):
     caller, visible, err = _auth(request)
     if err:
         return err
+    # An unsigned object GET with an override is real's InvalidRequest
+    # (us-east-1, 2026-10-11); it names no bucket or key.
+    if (
+        not head
+        and not selected
+        and caller.is_anonymous
+        and any(name in q for name in _RESPONSE_HEADERS)
+    ):
+        return _error(
+            "InvalidRequest",
+            "Request specific response headers cannot be used for anonymous GET requests.",
+        )
     conn = auth.conn(request)
     if not _bucket_visible(conn, bucket, visible):
         return _head(404) if head else _no_such_bucket(bucket)
@@ -1932,6 +1957,11 @@ async def object_get(request: Request, bucket: str, key: str):
 
     length = end - start + 1
     headers["Content-Length"] = str(length)
+    # Only the object's successful answer gets overrides, not sub-resources
+    # or refusals that have already returned above.
+    for query_name, header_name in _RESPONSE_HEADERS.items():
+        if query_name in q:
+            headers[header_name] = q[query_name]
     if head:
         return Response(status_code=status, headers=headers)
     return Response(content=data[start : end + 1], status_code=status, headers=headers)

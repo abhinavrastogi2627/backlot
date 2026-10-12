@@ -504,6 +504,8 @@ virtual-hosted client looks for `acme-artifacts.localhost:8000` and finds nothin
 | `GetObjectAcl`, `GetObjectTagging`, `GetObjectAttributes` and the rest of an object's sub-resources | Each as real answers an object with no tags or annotations, written with no checksum header, in a bucket without Object Lock, byte for byte: `?acl` the owner's `FULL_CONTROL`, `?tagging` an empty `TagSet`, `?attributes` the ETag, checksum, storage class and size asked for, `?annotation` no annotations and `NoSuchAnnotation` for one named, `?legal-hold` and `?retention` real's 400 for a bucket without Object Lock, and `?torrent` real's 405 |
 | `ListParts` | Always `NoSuchUpload`, since no upload is ever in progress; `max-parts` and `part-number-marker` validated first, as real does |
 
+An object's successful GET or HEAD also reads the six `response-*` query parameters: `response-content-type`, `response-content-language`, `response-expires`, `response-cache-control`, `response-content-disposition` and `response-content-encoding`. Each overrides only its named response header, including on a ranged 206, without changing the stored bytes. Names are case-sensitive, values are percent-decoded and empty values are retained. These apply to signed object reads, including presigned URLs, not to sub-resources or error responses. An unsigned object GET asking for one is refused with `InvalidRequest`. Measured on real S3 in us-east-1, 2026-10-11.
+
 The other sub-resources are answered as real answers them. `?session` is the listing: CreateSession
 is for directory buckets only and real S3 answers it with the listing on a general purpose bucket. A
 sub-resource whose operations are all on another method, `?delete` and a key's `?restore` and

@@ -2136,6 +2136,170 @@ def test_an_objects_own_answer_is_what_real_sends_for_its_object(
         assert r.headers.get("x-amz-checksum-type") == ("FULL_OBJECT" if checksum else None), method
 
 
+# The response overrides `backlot.routers.s3._RESPONSE_HEADERS` records.
+_RESPONSE_OVERRIDE_ROWS = [
+    ("response-content-type=text/csv", {"content-type": "text/csv"}),
+    ("response-content-language=ko", {"content-language": "ko"}),
+    ("response-expires=garbage", {"expires": "garbage"}),
+    ("response-cache-control=no-cache", {"cache-control": "no-cache"}),
+    (
+        "response-content-disposition=attachment%3B%20filename%3D%22x.txt%22",
+        {"content-disposition": 'attachment; filename="x.txt"'},
+    ),
+    ("response-content-encoding=gzip", {"content-encoding": "gzip"}),
+    ("response-content-type=", {"content-type": ""}),
+    (
+        "response-content-type=text/csv&response-cache-control=no-cache",
+        {"content-type": "text/csv", "cache-control": "no-cache"},
+    ),
+    ("Response-Content-Type=text/csv", {}),
+]
+
+
+@pytest.mark.parametrize("query, expected", _RESPONSE_OVERRIDE_ROWS)
+@pytest.mark.parametrize("method", ["GET", "HEAD"])
+def test_object_response_overrides_keep_the_object_bytes(live_server, query, expected, method):
+    import httpx
+
+    base_url, settings = live_server
+    plain = _signed(base_url, OBJECT_PATH, settings.admin_token, method=method)
+    url, headers = _sign_get(
+        base_url, f"{OBJECT_PATH}?{query}", settings.admin_token, method=method
+    )
+    # Read wire bytes, not decoded gzip: an override declares an encoding,
+    # but does not transform the stored object.
+    with httpx.stream(method, url, headers=headers) as response:
+        assert response.status_code == 200
+        for name in (
+            "content-type",
+            "content-language",
+            "expires",
+            "cache-control",
+            "content-disposition",
+            "content-encoding",
+        ):
+            assert response.headers.get(name) == expected.get(name, plain.headers.get(name))
+        assert response.headers["etag"] == plain.headers["etag"]
+        assert response.headers["content-length"] == str(len(OBJECT_TEXT))
+        assert b"".join(response.iter_raw()) == (OBJECT_TEXT if method == "GET" else b"")
+
+
+@pytest.mark.parametrize("method", ["GET", "HEAD"])
+def test_object_response_overrides_apply_to_a_range(live_server, method):
+    base_url, settings = live_server
+    response = _signed(
+        base_url,
+        OBJECT_PATH + "?response-content-type=text/csv",
+        settings.admin_token,
+        method=method,
+        extra_headers={"Range": "bytes=0-3"},
+    )
+    assert response.status_code == 206
+    assert response.headers["content-type"] == "text/csv"
+    assert response.headers["content-range"] == f"bytes 0-3/{len(OBJECT_TEXT)}"
+    assert response.content == (OBJECT_TEXT[:4] if method == "GET" else b"")
+
+
+@pytest.mark.parametrize("signature_version", ["s3v4", "s3"])
+def test_object_response_overrides_on_a_presigned_url(live_server, signature_version):
+    import boto3
+    import httpx
+    from botocore.config import Config
+
+    base_url, settings = live_server
+    client = boto3.client(
+        "s3",
+        endpoint_url=base_url + "/s3",
+        region_name="us-east-1",
+        aws_access_key_id=synth.s3_access_key_id(settings.admin_token),
+        aws_secret_access_key=synth.s3_secret_access_key(settings.admin_token),
+        config=Config(signature_version=signature_version, s3={"addressing_style": "path"}),
+    )
+    url = client.generate_presigned_url(
+        "get_object",
+        Params={
+            "Bucket": "eng-artifacts",
+            "Key": "runbooks/oncall.md",
+            "ResponseContentType": "text/csv",
+        },
+        ExpiresIn=60,
+    )
+    response = httpx.get(url)
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "text/csv"
+    assert response.content == OBJECT_TEXT
+
+
+def test_object_response_overrides_refuse_an_unsigned_get(live_server):
+    import httpx
+
+    base_url, _settings = live_server
+    response = httpx.get(base_url + OBJECT_PATH + "?response-content-type=text/csv")
+    assert response.status_code == 400
+    assert "<Code>InvalidRequest</Code>" in response.text
+    assert (
+        "<Message>Request specific response headers cannot be used for anonymous GET requests."
+        "</Message>" in response.text
+    )
+
+
+def test_object_response_overrides_do_not_bypass_credentials_or_acl(live_server, tokens):
+    base_url, settings = live_server
+    query = "?response-content-type=text/csv"
+    url, headers = _sign_get(
+        base_url,
+        OBJECT_PATH + query,
+        settings.admin_token,
+        tamper=True,
+    )
+    import httpx
+
+    tampered = httpx.get(url, headers=headers)
+    assert tampered.status_code == 403
+    assert "<Code>SignatureDoesNotMatch</Code>" in tampered.text
+    scoped = _signed(
+        base_url,
+        "/s3/people-vault/comp/bands.csv" + query,
+        tokens["ava@acme.com"],
+    )
+    assert scoped.status_code == 404
+    assert "<Code>NoSuchBucket</Code>" in scoped.text
+    assert scoped.headers["content-type"] == "application/xml"
+
+
+@pytest.mark.parametrize("method", ["GET", "HEAD"])
+@pytest.mark.parametrize(
+    "path, extra_headers, status",
+    [
+        (OBJECT_PATH + "?response-content-type=text/csv", {"Range": "bytes=1000-2000"}, 416),
+        ("/s3/eng-artifacts/missing?response-content-type=text/csv", {}, 404),
+        (OBJECT_PATH + "?tagging&response-content-type=text/csv", {}, 200),
+    ],
+)
+def test_object_response_overrides_do_not_relabel_other_answers(
+    live_server, method, path, extra_headers, status
+):
+    base_url, settings = live_server
+    original_path = path.replace("&response-content-type=text/csv", "").replace(
+        "?response-content-type=text/csv", ""
+    )
+    original = _signed(
+        base_url, original_path, settings.admin_token, method=method, extra_headers=extra_headers
+    )
+    response = _signed(
+        base_url,
+        path,
+        settings.admin_token,
+        method=method,
+        extra_headers=extra_headers,
+    )
+    assert response.status_code == original.status_code
+    if method == "GET":
+        assert response.status_code == status
+    assert response.headers.get("content-type") != "text/csv"
+    assert response.headers.get("content-type") == original.headers.get("content-type")
+
+
 def test_an_objects_attributes_size_is_its_bytes(tmp_path):
     """`ObjectSize` counts the object's bytes, which a key the GET sends with a `Content-Length`
     of its own agrees with, so an object whose text is not ASCII is larger than its length in
