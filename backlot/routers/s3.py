@@ -1780,8 +1780,13 @@ def _response_override_refusal(q) -> Response | None:
     """Real's 400 for an override whose value no header can carry, or ``None``.
 
     Each name is read from its first value, as ``_response_overrides`` reads it. A value holding a
-    character past U+00FF is refused, and so is one holding a `"` that opens a quoted span it does
-    not close, where a backslash escapes the character after it inside the quotes or out.
+    character past U+00FF is refused, a percent-encoded byte that is not UTF-8 among them, and so is
+    one holding a `"` that opens a quoted span it does not close, where a backslash escapes the
+    character after it inside the quotes or out: `a"b` and `"a\\"` are refused, `"a"b` and `a\\"b`
+    are not. Real S3 refused both ahead of a bucket or a key that does not exist, a `versionId`, a
+    `partNumber`, a `Range`, a checksum mode or a precondition it refuses, a sub-resource's answer
+    and an unsigned request's 400, and ahead of the credential in 30 of 32 requests whose signature
+    or key it refused (us-east-1, 2026-10-13).
     """
     for name in _RESPONSE_HEADERS:
         value = _first(q, name, None)
@@ -1805,7 +1810,10 @@ def _response_override_refusal(q) -> Response | None:
 
 
 def _response_overrides(q) -> dict[str, str]:
-    """Headers the overrides set after ``_response_override_refusal`` passes them."""
+    """The headers the `response-*` overrides set, once ``_response_override_refusal`` has passed
+    them: each name matched as written and read from its first value, so
+    `?response-content-type=a/b&response-content-type=c/d` sets `a/b` (measured 2026-10-13), with
+    the control characters ``_SPACED_CONTROLS`` names as spaces."""
     return {
         header: value.translate(_SPACED_CONTROLS)
         for name, header in _RESPONSE_HEADERS.items()
@@ -1860,9 +1868,11 @@ async def object_get(request: Request, bucket: str, key: str):
     caller, visible, err = _auth(request)
     if err:
         return err
-    # An unsigned GET or HEAD with an override is real's 400, naming no bucket or key. Other
-    # versions remain the anonymous caller's ordinary response, and every nonexistent bucket gets
-    # the same override refusal so callers cannot learn which names exist (2026-10-13).
+    # An unsigned GET or HEAD of an object with an override is real's 400, naming no bucket or key,
+    # on a key the bucket holds and on one it does not, with no version or the null one; beside a
+    # sub-resource or another version it is not (us-east-1, 2026-10-13). Real answers a bucket
+    # nobody has with `NoSuchBucket`; here every name gets the 400, so the answer does not tell an
+    # anonymous caller which names the corpus holds (``_auth``).
     if (
         not selected
         and caller.is_anonymous
@@ -2003,7 +2013,6 @@ async def object_get(request: Request, bucket: str, key: str):
 
     length = end - start + 1
     headers["Content-Length"] = str(length)
-    # Only the object's successful answer gets overrides, not sub-resources or refusals.
     headers.update(_response_overrides(q))
     if head:
         return Response(status_code=status, headers=headers)

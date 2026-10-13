@@ -1933,6 +1933,16 @@ _PART_2_MISSING = (416, "InvalidPartNumber", _NO_SUCH_PART.format(2))
 _NULL_VERSION_MISSING = (404, "NoSuchVersion", "<VersionId>null</VersionId>")
 _CHECKSUM_MODE_REFUSED = (400, "InvalidRequest", _BAD_CHECKSUM_MODE)
 _GARBAGE_MODE = {"x-amz-checksum-mode": "garbage"}
+_NOT_LATIN_1 = (
+    400,
+    "InvalidArgument",
+    "ISO-8859-1.</Message>" + _argued("response-content-type", "\ud55c"),
+)
+_OPEN_QUOTE = (
+    400,
+    "InvalidArgument",
+    "open quoted span.</Message>" + _argued("response-content-type", 'a"b'),
+)
 
 # Where each of an object's refusals sits against the bucket and the credential, as real answered
 # (2026-09-29, us-east-1): at a key in a bucket that does not exist (`absent`), at the object over a
@@ -2042,6 +2052,27 @@ _OBJECT_ORDER_ROWS = [
     ("present", "", {**_GARBAGE_MODE, "Range": "bytes=999-"},
      416, "InvalidRange", "not satisfiable"),
     ("present", "partNumber=1", {**_GARBAGE_MODE, "Range": "bytes=0-1"}, *_PART_BESIDE_RANGE),
+    # The values `backlot.routers.s3._response_override_refusal` refuses, where its docstring puts
+    # them, and the same request with a value it sends.
+    ("absent", "response-content-type=%ED%95%9C", {}, *_NOT_LATIN_1),
+    ("tampered", "response-content-type=%ED%95%9C", {}, *_NOT_LATIN_1),
+    ("missing", "response-content-type=a%22b", {}, *_OPEN_QUOTE),
+    ("present", "acl&response-content-type=a%22b", {}, *_OPEN_QUOTE),
+    ("present", "response-content-type=a%22b&partNumber=abc", {}, *_OPEN_QUOTE),
+    ("present", "response-content-type=a%22b&versionId=garbage", {}, *_OPEN_QUOTE),
+    ("present", "response-content-type=a%22b", {"Range": "bytes=999-"}, *_OPEN_QUOTE),
+    ("present", "response-content-type=a%22b", _GARBAGE_MODE, *_OPEN_QUOTE),
+    ("present", "response-content-type=%ED%95%9C&response-content-type=text/csv", {},
+     *_NOT_LATIN_1),
+    ("present", "response-content-disposition=attachment%3B%20filename%3D%22%ED%95%9C.txt%22", {},
+     400, "InvalidArgument",
+     _argued("response-content-disposition", 'attachment; filename="\ud55c.txt"')),
+    ("present", "response-expires=%22a%5C%22", {},
+     400, "InvalidArgument", _argued("response-expires", '"a\\"')),
+    ("present", "response-cache-control=a%C4%80b", {},
+     400, "InvalidArgument", _argued("response-cache-control", "a\u0100b")),
+    ("absent", "response-content-type=text/csv", {}, *_BUCKET_ABSENT),
+    ("tampered", "response-content-type=text/csv", {}, *_SIGNATURE_MISMATCH),
 ]
 # fmt: on
 
@@ -2136,7 +2167,9 @@ def test_an_objects_own_answer_is_what_real_sends_for_its_object(
         assert r.headers.get("x-amz-checksum-type") == ("FULL_OBJECT" if checksum else None), method
 
 
-# The response overrides `backlot.routers.s3._RESPONSE_HEADERS` records.
+# The response overrides `backlot.routers.s3._response_overrides` reads: the query, the request's
+# headers, and each header the answer sets. A header a row does not name is the object's own: its
+# type, and none of the other five.
 _RESPONSE_OVERRIDE_ROWS = [
     ("response-content-type=text/csv", {}, {"content-type": "text/csv"}),
     ("response-content-language=ko", {}, {"content-language": "ko"}),
@@ -2156,8 +2189,10 @@ _RESPONSE_OVERRIDE_ROWS = [
     ),
     ("response-content-type=text/csv", {"Range": "bytes=0-3"}, {"content-type": "text/csv"}),
     ("Response-Content-Type=text/csv", {}, {}),
+    # the first value of a repeated name
     ("response-content-type=a/b&response-content-type=c/d", {}, {"content-type": "a/b"}),
     ("response-content-type=&response-content-type=text/csv", {}, {"content-type": ""}),
+    # a control character as a space, and a tab, a Latin-1 letter and a closed quote as sent
     ("response-content-type=a%01b", {}, {"content-type": "a b"}),
     ("response-content-language=a%0D%0Ab", {}, {"content-language": "a  b"}),
     ("response-expires=a%7Fb", {}, {"expires": "a b"}),
@@ -2165,6 +2200,7 @@ _RESPONSE_OVERRIDE_ROWS = [
     ("response-content-disposition=%C3%BF", {}, {"content-disposition": "\xff"}),
     ("response-cache-control=%22a%22b", {}, {"cache-control": '"a"b'}),
     ("response-content-encoding=a%5C%22b", {}, {"content-encoding": 'a\\"b'}),
+    ("response-content-language=%22a%5C%22b%22", {}, {"content-language": '"a\\"b"'}),
 ]
 
 
@@ -2177,18 +2213,20 @@ def test_object_response_overrides_keep_the_object_bytes(
 
     base_url, settings = live_server
     etag = _signed(base_url, OBJECT_PATH, settings.admin_token).headers["etag"]
-    request_headers = headers
-    url, headers = _sign_get(
+    url, signed = _sign_get(
         base_url,
         f"{OBJECT_PATH}?{query}",
         settings.admin_token,
         method=method,
         extra_headers=headers,
     )
-    # Read wire bytes, not decoded gzip: an override declares an encoding,
-    # but does not transform the stored object.
-    with httpx.stream(method, url, headers=headers) as response:
-        assert response.status_code == (206 if "Range" in request_headers else 200)
+    first, last = 0, len(OBJECT_TEXT) - 1
+    if "Range" in headers:
+        first, last = map(int, headers["Range"].removeprefix("bytes=").split("-"))
+    # Read wire bytes, not decoded gzip: an override declares an encoding, but does not transform
+    # the stored object.
+    with httpx.stream(method, url, headers=signed) as response:
+        assert response.status_code == (206 if "Range" in headers else 200)
         for name in (
             "content-type",
             "content-language",
@@ -2198,28 +2236,11 @@ def test_object_response_overrides_keep_the_object_bytes(
             "content-encoding",
         ):
             own = "text/markdown" if name == "content-type" else None
-            assert response.headers.get(name) == expected.get(name, own)
+            assert response.headers.get(name) == expected.get(name, own), name
         assert response.headers["etag"] == etag
-        length = 4 if "Range" in request_headers else len(OBJECT_TEXT)
-        assert response.headers["content-length"] == str(length)
-        body = OBJECT_TEXT[:4] if "Range" in request_headers else OBJECT_TEXT
-        assert b"".join(response.iter_raw()) == (body if method == "GET" else b"")
-
-
-@pytest.mark.parametrize("method", ["GET", "HEAD"])
-def test_object_response_overrides_apply_to_a_range(live_server, method):
-    base_url, settings = live_server
-    response = _signed(
-        base_url,
-        OBJECT_PATH + "?response-content-type=text/csv",
-        settings.admin_token,
-        method=method,
-        extra_headers={"Range": "bytes=0-3"},
-    )
-    assert response.status_code == 206
-    assert response.headers["content-type"] == "text/csv"
-    assert response.headers["content-range"] == f"bytes 0-3/{len(OBJECT_TEXT)}"
-    assert response.content == (OBJECT_TEXT[:4] if method == "GET" else b"")
+        assert response.headers["content-length"] == str(last - first + 1)
+        body = OBJECT_TEXT[first : last + 1] if method == "GET" else b""
+        assert b"".join(response.iter_raw()) == body
 
 
 @pytest.mark.parametrize("signature_version", ["s3v4", "s3"])
@@ -2252,39 +2273,52 @@ def test_object_response_overrides_on_a_presigned_url(live_server, signature_ver
     assert response.content == OBJECT_TEXT
 
 
-@pytest.mark.parametrize(
-    "path, status",
-    [
-        (OBJECT_PATH + "?response-content-type=text/csv", 400),
-        (OBJECT_PATH + "?response-content-type=&versionId=null", 400),
-        ("/s3/eng-artifacts/no/such.md?response-content-type=text/csv", 400),
-        (OBJECT_PATH, 404),
-        (OBJECT_PATH + "?response-content-type=text/csv&versionId=x", 404),
-    ],
+_REFUSED_UNSIGNED = (
+    400,
+    "InvalidRequest",
+    "Request specific response headers cannot be used for anonymous GET requests.",
 )
-def test_object_response_overrides_refuse_an_unsigned_get_or_head(live_server, path, status):
+# An unsigned request carrying an override, as `backlot.routers.s3.object_get` answers it, beside
+# the same request without one: the path, then the status, code and message of the GET's answer,
+# and the status of the HEAD's.
+_UNSIGNED_OVERRIDE_ROWS = [
+    (f"{OBJECT_PATH}?response-content-type=text/csv", *_REFUSED_UNSIGNED, 400),
+    (f"{OBJECT_PATH}?response-content-type=", *_REFUSED_UNSIGNED, 400),
+    (f"{OBJECT_PATH}?response-content-type=text/csv&versionId=null", *_REFUSED_UNSIGNED, 400),
+    ("/s3/eng-artifacts/no/such.md?response-content-type=text/csv", *_REFUSED_UNSIGNED, 400),
+    # Real's `NoSuchBucket`; every name is refused alike here (`backlot.routers.s3.object_get`).
+    ("/s3/no-such-bucket/k.txt?response-content-type=text/csv", *_REFUSED_UNSIGNED, 400),
+    # Real's `AccessDenied`, which an unsigned caller is answered with `NoSuchBucket` for here
+    # (`backlot.routers.s3._auth`).
+    (OBJECT_PATH, 404, "NoSuchBucket", _NO_BUCKET, 404),
+    (f"{OBJECT_PATH}?Response-Content-Type=text/csv", 404, "NoSuchBucket", _NO_BUCKET, 404),
+    (
+        f"{OBJECT_PATH}?response-content-type=text/csv&versionId=x",
+        404,
+        "NoSuchBucket",
+        _NO_BUCKET,
+        404,
+    ),
+    (f"{OBJECT_PATH}?acl&response-content-type=text/csv", 404, "NoSuchBucket", _NO_BUCKET, 405),
+]
+
+
+@pytest.mark.parametrize(
+    "path, status, code, message, head_status",
+    _UNSIGNED_OVERRIDE_ROWS,
+    ids=[r[0].removeprefix("/s3/") for r in _UNSIGNED_OVERRIDE_ROWS],
+)
+def test_object_response_overrides_refuse_an_unsigned_get_or_head(
+    live_server, path, status, code, message, head_status
+):
     import httpx
 
     base_url, _settings = live_server
     response = httpx.get(base_url + path)
     assert response.status_code == status
+    assert f"<Code>{code}</Code><Message>{message}</Message>" in response.text
     head = httpx.head(base_url + path)
-    assert (head.status_code, head.content) == (status, b"")
-    if status == 400:
-        assert "<Code>InvalidRequest</Code>" in response.text
-
-
-@pytest.mark.parametrize(
-    "query", ["response-content-type=%ED%95%9C", "response-content-type=a%22b"]
-)
-def test_object_response_overrides_refuse_values_that_real_cannot_put_in_a_header(
-    live_server, query
-):
-    base_url, settings = live_server
-    response = _signed(base_url, f"{OBJECT_PATH}?{query}", settings.admin_token)
-    assert response.status_code == 400
-    head = _signed(base_url, f"{OBJECT_PATH}?{query}", settings.admin_token, method="HEAD")
-    assert (head.status_code, head.content) == (400, b"")
+    assert (head.status_code, head.content) == (head_status, b"")
 
 
 def test_object_response_overrides_do_not_bypass_credentials_or_acl(live_server, tokens):
@@ -2957,6 +2991,12 @@ _HEAD_ROWS = [
     (f"{OBJECT_PATH}?acl", "admin", {"x-amz-checksum-mode": "garbage"}, 405, None),
     ("/s3/no-such-bucket/a.txt?versioning&versionId=x", "admin", {}, 400, None),
     ("/s3/no-such-bucket/a.txt?attributes", "admin", {"x-amz-object-attributes": ","}, 405, None),
+    # An override value `backlot.routers.s3._response_override_refusal` refuses, ahead of the
+    # bucket, the credential and a selector's 405, and an unsigned HEAD carrying an override.
+    (f"{OBJECT_PATH}?response-content-type=%ED%95%9C", "admin", {}, 400, None),
+    ("/s3/no-such-bucket/a.txt?response-content-type=a%22b", "admin", {}, 400, None),
+    (f"{OBJECT_PATH}?acl&response-content-type=a%22b", "tampered", {}, 400, None),
+    (f"{OBJECT_PATH}?response-content-type=text/csv", None, {}, 400, None),
 ]
 # fmt: on
 
