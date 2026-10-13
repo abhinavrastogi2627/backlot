@@ -1920,12 +1920,14 @@ async def list_issues(
         for r in store.list_documents(conn, "github", repo, ids, limit=10_000, state=state_filter)
         if r["kind"] != "file"
     ]
-    # Measured on psf/requests, api.github.com, 2026-10-12: label
-    # names are case-insensitive, comma-separated names must all match,
-    # and the last repeated parameter is read. Spaces are part of a name.
     # Measured on psf/requests, api.github.com, 2026-10-12 and 2026-10-13: an issue is served when
-    # its labels include every name the value lists, comma-separated and compared without case. A
-    # value of commas alone or whitespace alone filters nothing; whitespace beside a comma is a name.
+    # its labels include every name the value lists, comma-separated and compared without case, and
+    # the last repeated parameter is the one read and the one a page link carries. A space is part
+    # of a name (`%20Bug` and `Bug%20` match nothing) and an empty name between two others is a name
+    # too (`Bug,,Documentation` matches nothing), but empty names at the end are dropped
+    # (`Bug,` is `Bug`). A value of commas alone (`,`) or of whitespace alone (`%20`, `%09`,
+    # `%C2%A0`, `%E3%80%80`) filters nothing; `%1C` to `%1F`, which `str.isspace` counts too, match
+    # nothing.
     named = (labels or "").rstrip(",")
     if named and not all(ch.isspace() and not 0x1C <= ord(ch) <= 0x1F for ch in labels):
         wanted = {name.lower() for name in named.split(",")}
