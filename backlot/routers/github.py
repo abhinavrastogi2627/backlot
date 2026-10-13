@@ -1923,8 +1923,12 @@ async def list_issues(
     # Measured on psf/requests, api.github.com, 2026-10-12: label
     # names are case-insensitive, comma-separated names must all match,
     # and the last repeated parameter is read. Spaces are part of a name.
-    if labels:
-        wanted = {name.lower() for name in labels.rstrip(",").split(",")}
+    # Measured on psf/requests, api.github.com, 2026-10-12 and 2026-10-13: an issue is served when
+    # its labels include every name the value lists, comma-separated and compared without case. A
+    # value of commas alone or whitespace alone filters nothing; whitespace beside a comma is a name.
+    named = (labels or "").rstrip(",")
+    if named and not all(ch.isspace() and not 0x1C <= ord(ch) <= 0x1F for ch in labels):
+        wanted = {name.lower() for name in named.split(",")}
         all_rows = [
             row
             for row in all_rows
