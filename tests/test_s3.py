@@ -2138,38 +2138,57 @@ def test_an_objects_own_answer_is_what_real_sends_for_its_object(
 
 # The response overrides `backlot.routers.s3._RESPONSE_HEADERS` records.
 _RESPONSE_OVERRIDE_ROWS = [
-    ("response-content-type=text/csv", {"content-type": "text/csv"}),
-    ("response-content-language=ko", {"content-language": "ko"}),
-    ("response-expires=garbage", {"expires": "garbage"}),
-    ("response-cache-control=no-cache", {"cache-control": "no-cache"}),
+    ("response-content-type=text/csv", {}, {"content-type": "text/csv"}),
+    ("response-content-language=ko", {}, {"content-language": "ko"}),
+    ("response-expires=garbage", {}, {"expires": "garbage"}),
+    ("response-cache-control=no-cache", {}, {"cache-control": "no-cache"}),
     (
         "response-content-disposition=attachment%3B%20filename%3D%22x.txt%22",
+        {},
         {"content-disposition": 'attachment; filename="x.txt"'},
     ),
-    ("response-content-encoding=gzip", {"content-encoding": "gzip"}),
-    ("response-content-type=", {"content-type": ""}),
+    ("response-content-encoding=gzip", {}, {"content-encoding": "gzip"}),
+    ("response-content-type=", {}, {"content-type": ""}),
     (
         "response-content-type=text/csv&response-cache-control=no-cache",
+        {},
         {"content-type": "text/csv", "cache-control": "no-cache"},
     ),
-    ("Response-Content-Type=text/csv", {}),
+    ("response-content-type=text/csv", {"Range": "bytes=0-3"}, {"content-type": "text/csv"}),
+    ("Response-Content-Type=text/csv", {}, {}),
+    ("response-content-type=a/b&response-content-type=c/d", {}, {"content-type": "a/b"}),
+    ("response-content-type=&response-content-type=text/csv", {}, {"content-type": ""}),
+    ("response-content-type=a%01b", {}, {"content-type": "a b"}),
+    ("response-content-language=a%0D%0Ab", {}, {"content-language": "a  b"}),
+    ("response-expires=a%7Fb", {}, {"expires": "a b"}),
+    ("response-content-type=a%09b", {}, {"content-type": "a\tb"}),
+    ("response-content-disposition=%C3%BF", {}, {"content-disposition": "\xff"}),
+    ("response-cache-control=%22a%22b", {}, {"cache-control": '"a"b'}),
+    ("response-content-encoding=a%5C%22b", {}, {"content-encoding": 'a\\"b'}),
 ]
 
 
-@pytest.mark.parametrize("query, expected", _RESPONSE_OVERRIDE_ROWS)
+@pytest.mark.parametrize("query, headers, expected", _RESPONSE_OVERRIDE_ROWS)
 @pytest.mark.parametrize("method", ["GET", "HEAD"])
-def test_object_response_overrides_keep_the_object_bytes(live_server, query, expected, method):
+def test_object_response_overrides_keep_the_object_bytes(
+    live_server, query, headers, expected, method
+):
     import httpx
 
     base_url, settings = live_server
-    plain = _signed(base_url, OBJECT_PATH, settings.admin_token, method=method)
+    etag = _signed(base_url, OBJECT_PATH, settings.admin_token).headers["etag"]
+    request_headers = headers
     url, headers = _sign_get(
-        base_url, f"{OBJECT_PATH}?{query}", settings.admin_token, method=method
+        base_url,
+        f"{OBJECT_PATH}?{query}",
+        settings.admin_token,
+        method=method,
+        extra_headers=headers,
     )
     # Read wire bytes, not decoded gzip: an override declares an encoding,
     # but does not transform the stored object.
     with httpx.stream(method, url, headers=headers) as response:
-        assert response.status_code == 200
+        assert response.status_code == (206 if "Range" in request_headers else 200)
         for name in (
             "content-type",
             "content-language",
@@ -2178,10 +2197,13 @@ def test_object_response_overrides_keep_the_object_bytes(live_server, query, exp
             "content-disposition",
             "content-encoding",
         ):
-            assert response.headers.get(name) == expected.get(name, plain.headers.get(name))
-        assert response.headers["etag"] == plain.headers["etag"]
-        assert response.headers["content-length"] == str(len(OBJECT_TEXT))
-        assert b"".join(response.iter_raw()) == (OBJECT_TEXT if method == "GET" else b"")
+            own = "text/markdown" if name == "content-type" else None
+            assert response.headers.get(name) == expected.get(name, own)
+        assert response.headers["etag"] == etag
+        length = 4 if "Range" in request_headers else len(OBJECT_TEXT)
+        assert response.headers["content-length"] == str(length)
+        body = OBJECT_TEXT[:4] if "Range" in request_headers else OBJECT_TEXT
+        assert b"".join(response.iter_raw()) == (body if method == "GET" else b"")
 
 
 @pytest.mark.parametrize("method", ["GET", "HEAD"])
@@ -2230,17 +2252,39 @@ def test_object_response_overrides_on_a_presigned_url(live_server, signature_ver
     assert response.content == OBJECT_TEXT
 
 
-def test_object_response_overrides_refuse_an_unsigned_get(live_server):
+@pytest.mark.parametrize(
+    "path, status",
+    [
+        (OBJECT_PATH + "?response-content-type=text/csv", 400),
+        (OBJECT_PATH + "?response-content-type=&versionId=null", 400),
+        ("/s3/eng-artifacts/no/such.md?response-content-type=text/csv", 400),
+        (OBJECT_PATH, 404),
+        (OBJECT_PATH + "?response-content-type=text/csv&versionId=x", 404),
+    ],
+)
+def test_object_response_overrides_refuse_an_unsigned_get_or_head(live_server, path, status):
     import httpx
 
     base_url, _settings = live_server
-    response = httpx.get(base_url + OBJECT_PATH + "?response-content-type=text/csv")
+    response = httpx.get(base_url + path)
+    assert response.status_code == status
+    head = httpx.head(base_url + path)
+    assert (head.status_code, head.content) == (status, b"")
+    if status == 400:
+        assert "<Code>InvalidRequest</Code>" in response.text
+
+
+@pytest.mark.parametrize(
+    "query", ["response-content-type=%ED%95%9C", "response-content-type=a%22b"]
+)
+def test_object_response_overrides_refuse_values_that_real_cannot_put_in_a_header(
+    live_server, query
+):
+    base_url, settings = live_server
+    response = _signed(base_url, f"{OBJECT_PATH}?{query}", settings.admin_token)
     assert response.status_code == 400
-    assert "<Code>InvalidRequest</Code>" in response.text
-    assert (
-        "<Message>Request specific response headers cannot be used for anonymous GET requests."
-        "</Message>" in response.text
-    )
+    head = _signed(base_url, f"{OBJECT_PATH}?{query}", settings.admin_token, method="HEAD")
+    assert (head.status_code, head.content) == (400, b"")
 
 
 def test_object_response_overrides_do_not_bypass_credentials_or_acl(live_server, tokens):
