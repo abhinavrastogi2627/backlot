@@ -4345,10 +4345,11 @@ def test_github_unsupported_api_version_is_refused_ahead_of_a_missing_credential
     version's 400 there where a supported version is `Requires authentication` (measured 2026-09-17,
     three runs of each).
 
-    Real sends no `Selected` echo on this 400 (it selected nothing), and does send one on a 404."""
+    The gateway sends no `Selected` echo on this 400; the pull/contents backend's different
+    refusal is covered separately. A 404 does carry the selected version."""
     c, _ = gh_client
     bad = {"X-GitHub-Api-Version": "1999-01-01"}
-    r = c.get(f"/github/repos/{gh_org}/gateway/pulls/1", headers=bad)
+    r = c.get(f"/github/repos/{gh_org}/gateway/issues/1", headers=bad)
     assert r.status_code == 400
     body = r.json()
     assert body["message"] == "Bad Request" and body["status"] == "400"
@@ -4363,6 +4364,84 @@ def test_github_unsupported_api_version_is_refused_ahead_of_a_missing_credential
     unversioned = c.get("/github/user/repos")
     assert unversioned.status_code == 401
     assert unversioned.json()["message"] == "Requires authentication"
+
+
+@pytest.mark.parametrize("pinned", ["1999-01-01", "garbage", "2022-11-29"])
+@pytest.mark.parametrize(
+    "path, accept, backend",
+    [
+        ("pulls/1", None, True),
+        ("pulls/1", "*/*", True),
+        ("pulls/1", "application/json", True),
+        ("pulls/1", "application/vnd.github+json", True),
+        ("pulls/1", "application/vnd.github.v3+json", True),
+        ("pulls/1", "application/vnd.github.raw+json", True),
+        ("pulls/1", "application/vnd.github.full+json", True),
+        *[
+            ("pulls/1", f"application/vnd.github.{media}", False)
+            for media in ("diff", "v3.diff", "diff+json", "patch", "v3.patch", "patch+json")
+        ],
+        ("pulls/1", "application/vnd.github.diff, application/json", False),
+        *[
+            (path, accept, True)
+            for path in ("contents", "contents/README.md?ref=main")
+            for accept in (
+                None,
+                "*/*",
+                "application/json",
+                "application/vnd.github+json",
+                "application/vnd.github.raw",
+                "application/vnd.github.v3.raw",
+                "application/vnd.github.html",
+                "application/vnd.github.object",
+                "application/vnd.github.diff",
+            )
+        ],
+        ("readme", None, False),
+        ("readme/docs", None, False),
+        ("git/blobs/nope", None, False),
+        ("pulls/1/reviews", None, False),
+    ],
+)
+def test_github_version_error_depends_on_endpoint_and_representation(
+    gh_client, gh_admin_h, gh_org, pinned, path, accept, backend
+):
+    """The pull and contents backend's refusal differs from the gateway's (see version check)."""
+    c, _ = gh_client
+    headers = {**gh_admin_h, "X-GitHub-Api-Version": pinned}
+    if accept is not None:
+        headers["Accept"] = accept
+    response = c.get(f"/github/repos/{gh_org}/gateway/{path}", headers=headers)
+    assert response.status_code == 400
+    if backend:
+        assert response.json() == {
+            "message": (
+                f'The version you specified in the "X-GitHub-Api-Version" request header, "{pinned}", '
+                "is not a supported version. The following versions are currently supported: "
+                '"2026-03-10" (most recent), and "2022-11-28".'
+            )
+        }
+        assert response.headers["X-GitHub-Api-Version-Selected"] == ""
+        assert response.content.endswith(b"\n")
+    else:
+        assert response.json()["message"] == "Bad Request"
+        assert "errors" in response.json()
+        assert "X-GitHub-Api-Version-Selected" not in response.headers
+
+
+@pytest.mark.parametrize("path", ["pulls/1", "contents", "contents/no-such-path"])
+def test_github_backend_version_error_order(gh_client, path):
+    c, _ = gh_client
+    url = f"/github/repos/no-such-owner/no-such-repo/{path}"
+    headers = {"X-GitHub-Api-Version": "garbage"}
+    response = c.get(url, headers=headers)
+    assert response.status_code == 400
+    assert set(response.json()) == {"message"}
+    assert response.headers["X-GitHub-Api-Version-Selected"] == ""
+    response = c.get(url, headers={**headers, "Authorization": "Bearer nope"})
+    assert response.status_code == 401
+    assert response.json()["message"] == "Bad credentials"
+    assert "X-GitHub-Api-Version-Selected" not in response.headers
 
 
 def test_github_every_answer_carries_a_request_id(gh_client, gh_admin_h, gh_org, monkeypatch):

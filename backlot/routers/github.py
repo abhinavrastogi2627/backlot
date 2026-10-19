@@ -217,15 +217,25 @@ def selected_api_version(request: Request) -> str | None:
     return pinned if pinned in API_VERSIONS else None
 
 
-def _unsupported_version_error(pinned: str) -> HTTPException:
-    """Real's own 400, wording included — a client that matches on the message needs the real text.
+def _unsupported_version_error(pinned: str, *, backend: bool = False) -> HTTPException:
+    """The gateway or backend's 400, including the wording a client can match on.
 
     Composed from ``API_VERSIONS`` rather than pasted, so the sentence cannot fall out of step with
-    the list it describes. The "X (most recent) and Y" phrasing is real's for the two versions it
-    supports today; a third would need real's phrasing for three, not a guess at it.
+    the list it describes. The gateway's "X (most recent) and Y" and backend's comma before "and"
+    are measured for two versions; a third would need real's phrasing for three, not a guess at it.
     """
     newest, *rest = API_VERSIONS
     supported = ", ".join(f'"{v}"' for v in rest)
+    if backend:
+        exc = HTTPException(status_code=400, headers={SELECTED_VERSION_HEADER: ""})
+        exc.github_body = {
+            "message": (
+                f'The version you specified in the "X-GitHub-Api-Version" request header, "{pinned}", '
+                f"is not a supported version. The following versions are currently supported: "
+                f'"{newest}" (most recent), and {supported}.'
+            )
+        }
+        return exc
     exc = HTTPException(status_code=400, detail="Bad Request")
     # The github envelope, carried on the exception the way backlot.errors.google carries its extra
     # fields; backlot.errors.github renders it. `errors` is a STRING here, not the usual array.
@@ -268,7 +278,18 @@ async def _validate_api_version(request: Request) -> None:
     """
     if honours_api_version(request) and selected_api_version(request) is None:
         # `None` is only reachable with the header present, so this read cannot miss.
-        raise _unsupported_version_error(request.headers[API_VERSION_HEADER])
+        # Measured against api.github.com on 2026-10-18: contents and the JSON pull backend
+        # answer a one-member body, newline and empty Selected header, even ahead of a missing
+        # repository or credential. Pull diff/patch representations keep the gateway's envelope.
+        route = getattr(request.scope.get("route"), "path", None)
+        backend = route in {
+            "/github/repos/{owner}/{repo}/contents",
+            "/github/repos/{owner}/{repo}/contents/{path:path}",
+        } or (
+            route == "/github/repos/{owner}/{repo}/pulls/{number}"
+            and not (_github_media(request, "diff") or _github_media(request, "patch"))
+        )
+        raise _unsupported_version_error(request.headers[API_VERSION_HEADER], backend=backend)
 
 
 async def _validate_path_owner(request: Request) -> None:

@@ -174,9 +174,10 @@ async def _http_exception_handler(request: Request, exc: StarletteHTTPException)
     # are indented to the byte and a `callback` on a GET answers one at 200 as a script, and an
     # Atlassian refusal takes the shape `Accept` asks for (``errors.atlassian.rendered``).
     # Asking the envelope keeps that where the rest of that vendor's error shape lives, and leaves
-    # GitHub with FastAPI's `JSONResponse`. GitHub honours `callback` through an envelope of its
-    # own — `/**/cb({"meta": …, "data": …})` under `application/javascript; charset=utf-8`, with
-    # the status inside `meta` and an unparseable name refused UNWRAPPED — which is a shape to
+    # most GitHub errors with FastAPI's `JSONResponse`. GitHub honours `callback` through an
+    # envelope of its own — `/**/cb({"meta": …, "data": …})` under
+    # `application/javascript; charset=utf-8`, with the status inside `meta` and an unparseable
+    # name refused UNWRAPPED — which is a shape to
     # build, not one to share.
     rendered = errors.rendered(request, exc.status_code, body, headers)
     if rendered is not None:
@@ -265,10 +266,10 @@ async def echo_github_api_version(request: Request, call_next):
     and diff media types do (see ``backlot.routers.github``) — so exactly the responses whose SHAPE
     the header describes would ship without it.
 
-    A rejected version gets no echo, matching real: it selected nothing. That is `None` from
-    ``selected_api_version``, the same call the router's 400 is raised from. Code search gets no
-    echo either, whatever it pinned: real's code search backend does not read the header, and
-    neither does `/rate_limit` asked with no `Authorization` header (see
+    A rejected version gets no added echo: ``selected_api_version`` returns `None`. The pull and
+    contents backend's own empty echo is preserved (see ``github._validate_api_version``).
+    Code search gets no echo either, whatever it pinned: real's code search backend does not read
+    the header, and neither does `/rate_limit` asked with no `Authorization` header (see
     ``github.honours_api_version``). Nor does a 404 for a path real does not route, whatever the
     caller's credential — see ``_github_routes`` — nor real's "Bad credentials" 401
     (``github.refused_a_credential``), nor the 401s ``github.refused_an_unserved_operation`` names.
