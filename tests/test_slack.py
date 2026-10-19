@@ -679,6 +679,8 @@ def test_slack_history_bounds_a_message_to_the_microsecond(
         assert page == ([ts] if served else [])
 
 
+#: Each measured value and whether the boundary message was served; the measurement lives in
+#: conversations_history. These values were sent with oldest, latest and both bounds.
 _INCLUSIVE_AT_EACH_BOUND = [
     (None, False),
     ("", False),
@@ -688,6 +690,7 @@ _INCLUSIVE_AT_EACH_BOUND = [
     *((value, True) for value in ("true", "True", "TRUE", "tRuE", "1", "01", "2", "-1", "1.0")),
     *((value, True) for value in ("yes", "on", "t", " true", "true ")),
 ]
+#: These values, including the repeated parameters, were measured with both bounds set.
 _INCLUSIVE_AT_BOTH_BOUNDS = [
     ("FALSE", False),
     ("fAlSe", False),
