@@ -679,76 +679,47 @@ def test_slack_history_bounds_a_message_to_the_microsecond(
         assert page == ([ts] if served else [])
 
 
-@pytest.mark.parametrize("bounds", [("oldest",), ("latest",), ("oldest", "latest")])
+_INCLUSIVE_AT_EACH_BOUND = [
+    (None, False),
+    ("", False),
+    ("0", False),
+    ("false", False),
+    ("False", False),
+    *((value, True) for value in ("true", "True", "TRUE", "tRuE", "1", "01", "2", "-1", "1.0")),
+    *((value, True) for value in ("yes", "on", "t", " true", "true ")),
+]
+_INCLUSIVE_AT_BOTH_BOUNDS = [
+    ("FALSE", False),
+    ("fAlSe", False),
+    *((value, True) for value in ("no", "off", "f", "n", "00", "000", "0.0", " 0", "0 ", "-0")),
+    *((value, True) for value in ("+0", "null", "none", "nil", "false ", " false", "\x00")),
+    (("true", "0"), False),
+    (("0", "true"), True),
+]
+
+
 @pytest.mark.parametrize(
-    "value",
+    "bounds, value, served",
     [
-        None,
-        "",
-        "0",
-        "false",
-        "False",
-        "FALSE",
-        "fAlSe",
-        "true",
-        "True",
-        "TRUE",
-        "tRuE",
-        "1",
-        "01",
-        "2",
-        "-1",
-        "1.0",
-        "yes",
-        "on",
-        "t",
-        " true",
-        "true ",
-        "no",
-        "off",
-        "f",
-        "n",
-        "00",
-        "000",
-        "0.0",
-        " 0",
-        "0 ",
-        "-0",
-        "+0",
-        "null",
-        "none",
-        "nil",
-        "false ",
-        " false",
-        "\x00",
-    ],
+        (bounds, value, served)
+        for bounds in (("oldest",), ("latest",), ("oldest", "latest"))
+        for value, served in _INCLUSIVE_AT_EACH_BOUND
+    ]
+    + [(("oldest", "latest"), value, served) for value, served in _INCLUSIVE_AT_BOTH_BOUNDS],
 )
-def test_slack_history_inclusive_spellings(client, admin_h, bounds, value):
-    """The measured spellings in conversations_history include or omit the boundary message."""
+def test_slack_history_inclusive_spellings(client, admin_h, bounds, value, served):
+    """The `inclusive` values sent to conversations_history serve or omit each bound message."""
     history = "/slack/api/conversations.history"
     cid = _a_channel_id(client, admin_h)
     ts = client.get(history, headers=admin_h, params={"channel": cid}).json()["messages"][0]["ts"]
-    params = {"channel": cid, **dict.fromkeys(bounds, ts)}
+    params = [("channel", cid), *((bound, ts) for bound in bounds)]
     if value is not None:
-        params["inclusive"] = value
+        params += [
+            ("inclusive", item) for item in (value if isinstance(value, tuple) else (value,))
+        ]
     response = client.get(history, headers=admin_h, params=params).json()
     assert response["ok"] is True
-    assert (ts in [m["ts"] for m in response["messages"]]) is (
-        value is not None and value.lower() not in ("", "0", "false")
-    )
-
-
-@pytest.mark.parametrize(
-    "values, served", [("true&inclusive=0", False), ("0&inclusive=true", True)]
-)
-def test_slack_history_last_inclusive_value_wins(client, admin_h, values, served):
-    history = "/slack/api/conversations.history"
-    cid = _a_channel_id(client, admin_h)
-    ts = client.get(history, headers=admin_h, params={"channel": cid}).json()["messages"][0]["ts"]
-    page = client.get(
-        f"{history}?channel={cid}&oldest={ts}&latest={ts}&inclusive={values}", headers=admin_h
-    ).json()
-    assert [m["ts"] for m in page["messages"]] == ([ts] if served else [])
+    assert (ts in [m["ts"] for m in response["messages"]]) is served
 
 
 def test_slack_members_are_the_channels_own_speakers(client, admin_h, tokens, ro_conn):
