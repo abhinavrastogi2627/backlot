@@ -4374,25 +4374,25 @@ def test_github_unsupported_api_version_is_refused_ahead_of_a_missing_credential
 
 @pytest.mark.parametrize("pinned", ["1999-01-01", "garbage", "2022-11-29"])
 @pytest.mark.parametrize(
-    "path, accept, backend",
+    "path, accept, backend, backend_on_head",
     [
-        ("pulls/1", None, True),
-        ("pulls/1", "*/*", True),
-        ("pulls/1", "application/json", True),
-        ("pulls/1", "application/vnd.github+json", True),
-        ("pulls/1", "application/vnd.github.v3+json", True),
-        ("pulls/1", "application/vnd.github.raw+json", True),
-        ("pulls/1", "application/vnd.github.full+json", True),
+        ("pulls/1", None, True, False),
+        ("pulls/1", "*/*", True, False),
+        ("pulls/1", "application/json", True, False),
+        ("pulls/1", "application/vnd.github+json", True, False),
+        ("pulls/1", "application/vnd.github.v3+json", True, False),
+        ("pulls/1", "application/vnd.github.raw+json", True, False),
+        ("pulls/1", "application/vnd.github.full+json", True, False),
         *[
-            ("pulls/1", f"application/vnd.github.{media}", False)
+            ("pulls/1", f"application/vnd.github.{media}", False, False)
             for media in ("diff", "v3.diff", "diff+json", "patch", "v3.patch", "patch+json")
         ],
-        ("pulls/1", "application/vnd.github.diff, application/json", False),
-        ("pulls/1", "application/json, application/vnd.github.diff", False),
-        ("pulls/1", "application/vnd.github.v3.diff+json", False),
-        ("pulls/1", "application/vnd.github.sha", True),
+        ("pulls/1", "application/vnd.github.diff, application/json", False, False),
+        ("pulls/1", "application/json, application/vnd.github.diff", False, False),
+        ("pulls/1", "application/vnd.github.v3.diff+json", False, False),
+        ("pulls/1", "application/vnd.github.sha", True, False),
         *[
-            (path, accept, True)
+            (path, accept, True, True)
             for path in ("contents", "contents/README.md?ref=main")
             for accept in (
                 None,
@@ -4406,22 +4406,26 @@ def test_github_unsupported_api_version_is_refused_ahead_of_a_missing_credential
                 "application/vnd.github.diff",
             )
         ],
-        ("readme", None, False),
-        ("readme/docs", None, False),
-        ("git/blobs/nope", None, False),
-        ("pulls/1/reviews", None, False),
+        ("readme", None, False, False),
+        ("readme/docs", None, False, False),
+        ("git/blobs/nope", None, False, False),
+        ("pulls/1/reviews", None, False, False),
     ],
 )
 def test_github_version_error_depends_on_endpoint_and_representation(
-    gh_client, gh_admin_h, gh_org, pinned, path, accept, backend
+    gh_client, gh_admin_h, gh_org, pinned, path, accept, backend, backend_on_head
 ):
-    """Which of the two 400s an unsupported version draws, by route and Accept
+    """Which of the two 400s an unsupported version draws, by route, Accept and GET or HEAD
     (``backlot.routers.github._validate_api_version``)."""
     c, _ = gh_client
     headers = {**gh_admin_h, "X-GitHub-Api-Version": pinned}
     if accept is not None:
         headers["Accept"] = accept
-    response = c.get(f"/github/repos/{gh_org}/gateway/{path}", headers=headers)
+    url = f"/github/repos/{gh_org}/gateway/{path}"
+    head = c.head(url, headers=headers)
+    assert head.status_code == 400 and head.content == b""
+    assert (head.headers.get("X-GitHub-Api-Version-Selected") == "") is backend_on_head
+    response = c.get(url, headers=headers)
     assert response.status_code == 400
     if backend:
         assert response.json() == {
@@ -4457,8 +4461,8 @@ def test_github_backend_version_error_order(gh_client, path):
 
 
 def _sent_raw(client, path: str, headers: dict[str, bytes]):
-    """A GET on ``path`` with each header's bytes as they are, through httpx's own `ASGITransport`
-    over the app ``client`` started: the TestClient sends a header's bytes above 0x7F as UTF-8."""
+    """A GET on ``path`` with each header's bytes as they are, which
+    ``tests.test_atlassian._sent_as`` says why the TestClient does not."""
     import asyncio
 
     import httpx

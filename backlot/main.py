@@ -727,7 +727,8 @@ async def answer_head_as_the_get_without_its_body(request: Request, call_next):
     What the vendors do NOT share is the `content-length`: GitHub and Notion declare the length of
     the body the `GET` would have carried, and Atlassian's and Google's answers split, so that
     header is asked for rather than assumed, through ``errors.head_content_length``. The request
-    is marked ``answering_head`` on its state for ``errors.google.jsonp_callback``, which reads it.
+    is marked ``answering_head`` on its state for ``errors.google.jsonp_callback`` and
+    ``routers.github._validate_api_version``, which read it.
 
     The method goes back to `HEAD` on the scope once the GET has answered, because the server frames
     the response by it: uvicorn's httptools protocol reads ``scope["method"]`` when it writes the

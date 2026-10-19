@@ -228,8 +228,8 @@ def http_body(path: str, exc, query=None) -> dict | None:
 def rendered(request: Request, status_code: int, body: dict, headers=None) -> Response | None:
     """The backend version refusal's newline and Go-style HTML escapes.
 
-    Measured against api.github.com on 2026-10-19: each `<`, `>` and `&` in its `message` came
-    back as `\\u003c`, `\\u003e` and `\\u0026`, as Go's `encoding/json` writes them. The newline's
+    Each `<`, `>` and `&` in its `message` came back from api.github.com on 2026-10-19 as
+    `\\u003c`, `\\u003e` and `\\u0026`, as Go's `encoding/json` writes them. The newline's
     measurement is the comment in ``backlot.routers.github._validate_api_version``.
 
     Its empty Selected header distinguishes it from the gateway's version refusal. Other GitHub

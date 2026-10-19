@@ -244,7 +244,7 @@ def _go_quoted(value: str) -> str:
     out = []
     for ch in value.encode("latin-1").decode("utf-8", "surrogateescape"):
         cp = ord(ch)
-        if 0xDC80 <= cp <= 0xDCFF:  # a byte that is not UTF-8, as `surrogateescape` hands it over
+        if 0xDC80 <= cp <= 0xDCFF:  # where `surrogateescape` puts an undecodable byte
             out.append(f"\\x{cp & 0xFF:02x}")
         elif ch in '"\\':
             out.append("\\" + ch)
@@ -323,13 +323,15 @@ async def _validate_api_version(request: Request) -> None:
         # answer a one-member body, newline and empty Selected header, ahead of a missing repository
         # or path and of a missing credential, though a bad bearer is still `Bad credentials` first.
         # A pull `_github_media` reads as a diff or a patch keeps the gateway's envelope, a diff
-        # after `application/json` included (measured 2026-10-19).
+        # after `application/json` included, and so does a HEAD on the pull whatever `Accept`
+        # holds, where a HEAD on contents is the backend's (measured 2026-10-19).
         route = getattr(request.scope.get("route"), "path", None)
         backend = route in {
             "/github/repos/{owner}/{repo}/contents",
             "/github/repos/{owner}/{repo}/contents/{path:path}",
         } or (
             route == "/github/repos/{owner}/{repo}/pulls/{number}"
+            and not getattr(request.state, "answering_head", False)
             and not (_github_media(request, "diff") or _github_media(request, "patch"))
         )
         raise _unsupported_version_error(request.headers[API_VERSION_HEADER], backend=backend)
