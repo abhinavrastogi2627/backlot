@@ -651,7 +651,10 @@ async def conversations_history(request: Request):
     if offset is None:
         return _err("invalid_cursor")
     if lo is not None or hi is not None:  # time-bounded (e.g. a single day): filter, then paginate
-        inclusive = _param(request, "inclusive") in ("1", "true", "True")
+        # Measured against slack.com/api on 2026-10-18: only absent, empty, "0" and
+        # case-insensitive "false" exclude the bound. Other strings, including "00", "no"
+        # and whitespace-padded "false", include it. Repeated query values use the last one.
+        inclusive = (_param(request, "inclusive") or "").lower() not in ("", "0", "false")
 
         def _ts_to_us(ts_str: str) -> int:
             """Convert a Slack ts string "SSSSSSSSSS.MMMMMM" to total microseconds."""
