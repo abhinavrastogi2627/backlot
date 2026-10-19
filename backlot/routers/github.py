@@ -223,6 +223,40 @@ def selected_api_version(request: Request) -> str | None:
     return pinned if pinned in API_VERSIONS else None
 
 
+def _go_quoted(value: str) -> str:
+    """``value``'s bytes in double quotes as Go's `strconv.Quote` writes them, which is how real's
+    backend names the version it refused: `"` and `\\` behind a backslash, a tab as `\\t`, a byte
+    that is not UTF-8 as `\\x` and its two hex digits, a character Go does not print as `\\u` and
+    four (`\\U` and eight past U+FFFF), and every other character as it came. What Go prints is
+    what `str.isprintable` keeps: letters, marks, numbers, punctuation, symbols and the ASCII space,
+    each by the Unicode version it carries.
+
+    Measured against api.github.com on 2026-10-19, sending each byte from 0x01 to 0xFF but CR and
+    LF between an `a` and a `b` on `contents/README.md`, then UTF-8 sequences the same way: the
+    printable ASCII came back as sent but for `"` and `\\`, a tab as `\\t`, a lone byte from 0x80
+    up as `\\x` and its digits, `é`, U+FFFD, U+10000, an emoji and a combining acute as sent,
+    U+00A0, U+2028, U+2029, U+200B, U+E000 and U+FFFF as `\\u` escapes, U+10FFFF as `\\U0010ffff`,
+    and each byte of a truncated, overlong, surrogate or past-U+10FFFF sequence as `\\x`. The other
+    control bytes and DEL were the front door's 400 and reached no backend. Real's Go carries
+    Unicode 15.0, as Python 3.12 does: U+1F6DC and U+31350, new in 15.0, came back as sent, and
+    U+2EBF0, U+31EF and U+2FFC from 15.1 and U+1CC00 from 16.0 as escapes.
+    """
+    out = []
+    for ch in value.encode("latin-1").decode("utf-8", "surrogateescape"):
+        cp = ord(ch)
+        if 0xDC80 <= cp <= 0xDCFF:  # a byte that is not UTF-8, as `surrogateescape` hands it over
+            out.append(f"\\x{cp & 0xFF:02x}")
+        elif ch in '"\\':
+            out.append("\\" + ch)
+        elif ch == "\t":
+            out.append("\\t")
+        elif ch.isprintable():
+            out.append(ch)
+        else:
+            out.append(f"\\u{cp:04x}" if cp < 0x10000 else f"\\U{cp:08x}")
+    return '"' + "".join(out) + '"'
+
+
 def _unsupported_version_error(pinned: str, *, backend: bool = False) -> HTTPException:
     """The gateway or backend's 400, including the wording a client can match on.
 
@@ -233,9 +267,7 @@ def _unsupported_version_error(pinned: str, *, backend: bool = False) -> HTTPExc
     newest, *rest = API_VERSIONS
     supported = ", ".join(f'"{v}"' for v in rest)
     if backend:
-        # api.github.com, measured 2026-10-19: quotes and backslashes in the version are
-        # escaped inside the sentence, as Go's %q quotes them.
-        quoted = '"' + pinned.replace("\\", "\\\\").replace('"', '\\"') + '"'
+        quoted = _go_quoted(pinned)
         exc = HTTPException(status_code=400, headers={SELECTED_VERSION_HEADER: ""})
         exc.github_body = {
             "message": (
@@ -289,9 +321,9 @@ async def _validate_api_version(request: Request) -> None:
         # `None` is only reachable with the header present, so this read cannot miss.
         # Measured against api.github.com on 2026-10-18: contents and the JSON pull backend
         # answer a one-member body, newline and empty Selected header, ahead of a missing repository
-        # or path and of a missing credential, though a bad bearer is still Bad credentials first.
-        # Any diff/patch member of Accept keeps the gateway's envelope, including a diff after
-        # application/json (measured 2026-10-19).
+        # or path and of a missing credential, though a bad bearer is still `Bad credentials` first.
+        # A pull `_github_media` reads as a diff or a patch keeps the gateway's envelope, a diff
+        # after `application/json` included (measured 2026-10-19).
         route = getattr(request.scope.get("route"), "path", None)
         backend = route in {
             "/github/repos/{owner}/{repo}/contents",

@@ -4456,18 +4456,58 @@ def test_github_backend_version_error_order(gh_client, path):
     assert "X-GitHub-Api-Version-Selected" not in response.headers
 
 
-def test_github_backend_version_error_quotes_the_value_as_go_does(gh_client, gh_admin_h, gh_org):
-    """The backend's 400 bytes for a value its quoting and escaping both change
-    (``backlot.errors.github.rendered``)."""
+def _sent_raw(client, path: str, headers: dict[str, bytes]):
+    """A GET on ``path`` with each header's bytes as they are, through httpx's own `ASGITransport`
+    over the app ``client`` started: the TestClient sends a header's bytes above 0x7F as UTF-8."""
+    import asyncio
+
+    import httpx
+
+    async def send():
+        transport = httpx.ASGITransport(app=client.app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as raw:
+            return await raw.get(path, headers=headers)
+
+    return asyncio.run(send())
+
+
+#: Each version sent, as bytes, and the quoted value real's backend wrote in its `message`, as the
+#: bytes of its JSON (``backlot.routers.github._go_quoted`` has the measurement).
+_GO_QUOTED_VERSIONS = [
+    (b'<a>&"b"\\c', b'\\"\\u003ca\\u003e\\u0026\\\\\\"b\\\\\\"\\\\\\\\c\\"'),
+    (b"a\tb", b'\\"a\\\\tb\\"'),
+    (b"a\x80b", b'\\"a\\\\x80b\\"'),
+    (b"a\xffb", b'\\"a\\\\xffb\\"'),
+    (b"a\xc3b", b'\\"a\\\\xc3b\\"'),
+    (b"a\xc0\xafb", b'\\"a\\\\xc0\\\\xafb\\"'),
+    (b"a\xed\xa0\x80b", b'\\"a\\\\xed\\\\xa0\\\\x80b\\"'),
+    (b"a\xc3\xa9b", b'\\"a\xc3\xa9b\\"'),
+    (b"a\xef\xbf\xbdb", b'\\"a\xef\xbf\xbdb\\"'),
+    (b"a\xf0\x9f\x98\x80b", b'\\"a\xf0\x9f\x98\x80b\\"'),
+    (b"a\xcc\x81b", b'\\"a\xcc\x81b\\"'),
+    (b"a\xc2\xa0b", b'\\"a\\\\u00a0b\\"'),
+    (b"a\xe2\x80\xa8b", b'\\"a\\\\u2028b\\"'),
+    (b"a\xe2\x80\x8bb", b'\\"a\\\\u200bb\\"'),
+    (b"a\xee\x80\x80b", b'\\"a\\\\ue000b\\"'),
+    (b"a\xef\xbf\xbfb", b'\\"a\\\\uffffb\\"'),
+    (b"a\xf4\x8f\xbf\xbfb", b'\\"a\\\\U0010ffffb\\"'),
+]
+
+
+@pytest.mark.parametrize("sent, quoted", _GO_QUOTED_VERSIONS)
+def test_github_backend_version_error_quotes_the_value_as_go_does(
+    gh_client, gh_admin_h, gh_org, sent, quoted
+):
+    """The backend's 400 bytes for a value its quoting and escaping change
+    (``backlot.routers.github._go_quoted``, ``backlot.errors.github.rendered``)."""
     c, _ = gh_client
-    headers = {**gh_admin_h, "X-GitHub-Api-Version": '<a>&"b"\\c'}
-    response = c.get(f"/github/repos/{gh_org}/gateway/contents/README.md", headers=headers)
+    headers = {"Authorization": gh_admin_h["Authorization"].encode(), "X-GitHub-Api-Version": sent}
+    response = _sent_raw(c, f"/github/repos/{gh_org}/gateway/contents/README.md", headers)
     assert response.status_code == 400
     assert response.content == (
         b'{"message":"The version you specified in the \\"X-GitHub-Api-Version\\" request '
-        b'header, \\"\\u003ca\\u003e\\u0026\\\\\\"b\\\\\\"\\\\\\\\c\\", is not a supported '
-        b'version. The following versions are currently supported: \\"2026-03-10\\" (most '
-        b'recent), and \\"2022-11-28\\"."}\n'
+        b"header, " + quoted + b", is not a supported version. The following versions are "
+        b'currently supported: \\"2026-03-10\\" (most recent), and \\"2022-11-28\\"."}\n'
     )
 
 
