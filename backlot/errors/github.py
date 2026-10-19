@@ -226,14 +226,17 @@ def http_body(path: str, exc, query=None) -> dict | None:
 
 
 def rendered(request: Request, status_code: int, body: dict, headers=None) -> Response | None:
-    """The backend version refusal's newline, as measured in the router's version check.
+    """The backend version refusal's newline and Go-style HTML escapes.
 
     Its empty Selected header distinguishes it from the gateway's version refusal. Other GitHub
     errors keep the shared JSON rendering.
     """
     if status_code == 400 and headers and headers.get("X-GitHub-Api-Version-Selected") == "":
+        written = json.dumps(body, ensure_ascii=False, separators=(",", ":"))
+        for ch in "<>&":
+            written = written.replace(ch, f"\\u{ord(ch):04x}")
         return Response(
-            json.dumps(body, ensure_ascii=False, separators=(",", ":")) + "\n",
+            written + "\n",
             status_code=status_code,
             headers=headers,
             media_type=JSON_MEDIA_TYPE,

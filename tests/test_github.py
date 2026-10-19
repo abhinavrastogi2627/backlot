@@ -4345,8 +4345,9 @@ def test_github_unsupported_api_version_is_refused_ahead_of_a_missing_credential
     version's 400 there where a supported version is `Requires authentication` (measured 2026-09-17,
     three runs of each).
 
-    The gateway sends no `Selected` echo on this 400; the pull/contents backend's different
-    refusal is covered separately. A 404 does carry the selected version."""
+    The gateway sends no `Selected` echo on this 400; the pull and contents backend answer their
+    own (``test_github_version_error_depends_on_endpoint_and_representation``). A 404 does carry
+    the selected version."""
     c, _ = gh_client
     bad = {"X-GitHub-Api-Version": "1999-01-01"}
     r = c.get(f"/github/repos/{gh_org}/gateway/issues/1", headers=bad)
@@ -4382,6 +4383,9 @@ def test_github_unsupported_api_version_is_refused_ahead_of_a_missing_credential
             for media in ("diff", "v3.diff", "diff+json", "patch", "v3.patch", "patch+json")
         ],
         ("pulls/1", "application/vnd.github.diff, application/json", False),
+        ("pulls/1", "application/json, application/vnd.github.diff", False),
+        ("pulls/1", "application/vnd.github.v3.diff+json", False),
+        ("pulls/1", "application/vnd.github.sha", True),
         *[
             (path, accept, True)
             for path in ("contents", "contents/README.md?ref=main")
@@ -4406,7 +4410,8 @@ def test_github_unsupported_api_version_is_refused_ahead_of_a_missing_credential
 def test_github_version_error_depends_on_endpoint_and_representation(
     gh_client, gh_admin_h, gh_org, pinned, path, accept, backend
 ):
-    """The pull and contents backend's refusal differs from the gateway's (see version check)."""
+    """Which of the two 400s an unsupported version draws, by route and Accept
+    (``backlot.routers.github._validate_api_version``)."""
     c, _ = gh_client
     headers = {**gh_admin_h, "X-GitHub-Api-Version": pinned}
     if accept is not None:
@@ -4431,6 +4436,8 @@ def test_github_version_error_depends_on_endpoint_and_representation(
 
 @pytest.mark.parametrize("path", ["pulls/1", "contents", "contents/no-such-path"])
 def test_github_backend_version_error_order(gh_client, path):
+    """Where the backend's 400 falls against a repository that does not exist and against the
+    credential (``backlot.routers.github._validate_api_version``)."""
     c, _ = gh_client
     url = f"/github/repos/no-such-owner/no-such-repo/{path}"
     headers = {"X-GitHub-Api-Version": "garbage"}
@@ -4442,6 +4449,21 @@ def test_github_backend_version_error_order(gh_client, path):
     assert response.status_code == 401
     assert response.json()["message"] == "Bad credentials"
     assert "X-GitHub-Api-Version-Selected" not in response.headers
+
+
+def test_github_backend_version_error_quotes_the_value_as_go_does(gh_client, gh_admin_h, gh_org):
+    """The backend's 400 bytes for a value its quoting and escaping both change
+    (``backlot.errors.github.rendered``)."""
+    c, _ = gh_client
+    headers = {**gh_admin_h, "X-GitHub-Api-Version": '<a>&"b"\\c'}
+    response = c.get(f"/github/repos/{gh_org}/gateway/contents/README.md", headers=headers)
+    assert response.status_code == 400
+    assert response.content == (
+        b'{"message":"The version you specified in the \\"X-GitHub-Api-Version\\" request '
+        b'header, \\"\\u003ca\\u003e\\u0026\\\\\\"b\\\\\\"\\\\\\\\c\\", is not a supported '
+        b'version. The following versions are currently supported: \\"2026-03-10\\" (most '
+        b'recent), and \\"2022-11-28\\"."}\n'
+    )
 
 
 def test_github_every_answer_carries_a_request_id(gh_client, gh_admin_h, gh_org, monkeypatch):

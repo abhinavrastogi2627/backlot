@@ -227,10 +227,11 @@ def _unsupported_version_error(pinned: str, *, backend: bool = False) -> HTTPExc
     newest, *rest = API_VERSIONS
     supported = ", ".join(f'"{v}"' for v in rest)
     if backend:
+        quoted = '"' + pinned.replace("\\", "\\\\").replace('"', '\\"') + '"'
         exc = HTTPException(status_code=400, headers={SELECTED_VERSION_HEADER: ""})
         exc.github_body = {
             "message": (
-                f'The version you specified in the "X-GitHub-Api-Version" request header, "{pinned}", '
+                f'The version you specified in the "X-GitHub-Api-Version" request header, {quoted}, '
                 f"is not a supported version. The following versions are currently supported: "
                 f'"{newest}" (most recent), and {supported}.'
             )
@@ -279,8 +280,9 @@ async def _validate_api_version(request: Request) -> None:
     if honours_api_version(request) and selected_api_version(request) is None:
         # `None` is only reachable with the header present, so this read cannot miss.
         # Measured against api.github.com on 2026-10-18: contents and the JSON pull backend
-        # answer a one-member body, newline and empty Selected header, even ahead of a missing
-        # repository or credential. Pull diff/patch representations keep the gateway's envelope.
+        # answer a one-member body, newline and empty Selected header, ahead of a missing repository
+        # or path and of a missing credential, though a bad bearer is still Bad credentials first.
+        # Any diff/patch member of Accept keeps the gateway's envelope.
         route = getattr(request.scope.get("route"), "path", None)
         backend = route in {
             "/github/repos/{owner}/{repo}/contents",

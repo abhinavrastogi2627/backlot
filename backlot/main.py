@@ -177,8 +177,7 @@ async def _http_exception_handler(request: Request, exc: StarletteHTTPException)
     # most GitHub errors with FastAPI's `JSONResponse`. GitHub honours `callback` through an
     # envelope of its own — `/**/cb({"meta": …, "data": …})` under
     # `application/javascript; charset=utf-8`, with the status inside `meta` and an unparseable
-    # name refused UNWRAPPED — which is a shape to
-    # build, not one to share.
+    # name refused UNWRAPPED — which is a shape to build, not one to share.
     rendered = errors.rendered(request, exc.status_code, body, headers)
     if rendered is not None:
         return rendered
