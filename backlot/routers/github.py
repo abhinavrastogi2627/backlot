@@ -233,6 +233,8 @@ def _unsupported_version_error(pinned: str, *, backend: bool = False) -> HTTPExc
     newest, *rest = API_VERSIONS
     supported = ", ".join(f'"{v}"' for v in rest)
     if backend:
+        # api.github.com, measured 2026-10-19: quotes and backslashes in the version are
+        # escaped inside the sentence, as Go's %q quotes them.
         quoted = '"' + pinned.replace("\\", "\\\\").replace('"', '\\"') + '"'
         exc = HTTPException(status_code=400, headers={SELECTED_VERSION_HEADER: ""})
         exc.github_body = {
@@ -288,7 +290,8 @@ async def _validate_api_version(request: Request) -> None:
         # Measured against api.github.com on 2026-10-18: contents and the JSON pull backend
         # answer a one-member body, newline and empty Selected header, ahead of a missing repository
         # or path and of a missing credential, though a bad bearer is still Bad credentials first.
-        # Any diff/patch member of Accept keeps the gateway's envelope.
+        # Any diff/patch member of Accept keeps the gateway's envelope, including a diff after
+        # application/json (measured 2026-10-19).
         route = getattr(request.scope.get("route"), "path", None)
         backend = route in {
             "/github/repos/{owner}/{repo}/contents",

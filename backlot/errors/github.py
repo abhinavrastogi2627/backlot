@@ -228,6 +228,9 @@ def http_body(path: str, exc, query=None) -> dict | None:
 def rendered(request: Request, status_code: int, body: dict, headers=None) -> Response | None:
     """The backend version refusal's newline and Go-style HTML escapes.
 
+    Measured against api.github.com on 2026-10-19: the version containing quotes, a backslash
+    and <a>& is quoted within the message and its <, > and & are JSON Unicode escapes on the wire.
+
     Its empty Selected header distinguishes it from the gateway's version refusal. Other GitHub
     errors keep the shared JSON rendering.
     """
