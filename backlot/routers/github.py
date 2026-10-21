@@ -999,16 +999,40 @@ def _github_media(request: Request, name: str) -> bool:
     return any(t in wanted for t in _accept_types(request))
 
 
+def _representation_content_type(request: Request) -> str:
+    """api.github.com on 2026-10-22: diff, patch and contents/readme raw echo Accept's
+    parameter-free members, preserving case and duplicates, in descending q order. At equal
+    weights concrete members precede wildcards; otherwise their input order is retained.
+    JSON and raw git blobs do not use this header.
+    """
+    members = []
+    for member in request.headers.get("accept", "").split(","):
+        media_type, _, params = member.partition(";")
+        media_type = media_type.strip()
+        weight = 1.0
+        first_param = params.partition(";")[0].strip()
+        if first_param.startswith("q="):
+            try:
+                weight = float(first_param[2:])
+            except ValueError:
+                pass
+        members.append((media_type, weight))
+    members.sort(key=lambda item: (-item[1], "*" in item[0]))
+    return ",".join(media_type for media_type, _ in members) + "; charset=utf-8"
+
+
 def _raw_response(request: Request, content: str, media_type: str) -> Response | None:
     """The raw body when the caller asked for it, else ``None`` so the handler falls through to its
     JSON envelope."""
     if not _github_media(request, "raw"):
         return None
-    return Response(content=content.encode(), media_type=media_type)
+    content_type = (
+        media_type if media_type == _BLOB_RAW_TYPE else _representation_content_type(request)
+    )
+    return Response(content=content.encode(), headers={"Content-Type": content_type})
 
 
-# Real GitHub answers git/blobs raw with text/plain and contents/readme with vnd.github.raw. Both
-# are the same bytes; the difference is GitHub's own, so it is reproduced rather than unified.
+# Raw git blobs have a fixed type; contents/readme echo the request's media types.
 _BLOB_RAW_TYPE = "text/plain; charset=utf-8"
 _CONTENT_RAW_TYPE = "application/vnd.github.raw; charset=utf-8"
 
@@ -2519,9 +2543,11 @@ async def get_pull(owner: str, repo: str, number: int, request: Request):
     if wants_patch:
         return Response(
             content=_pr_mbox(row, obj, diff).encode(),
-            media_type="application/vnd.github.patch; charset=utf-8",
+            headers={"Content-Type": _representation_content_type(request)},
         )
-    return Response(content=diff.encode(), media_type="application/vnd.github.diff; charset=utf-8")
+    return Response(
+        content=diff.encode(), headers={"Content-Type": _representation_content_type(request)}
+    )
 
 
 @router.get("/repos/{owner}/{repo}/pulls/{number}/reviews")

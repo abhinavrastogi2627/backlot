@@ -3848,7 +3848,8 @@ def test_github_raw_media_type_returns_the_bytes(gh_client, gh_admin_h, gh_org, 
     ]:
         r = c.get(url, headers={**gh_admin_h, "Accept": accept})
         assert r.status_code == 200, url
-        assert r.headers["content-type"].startswith(ctype), url
+        expected_type = ctype if ctype == "text/plain" else accept.partition(";")[0]
+        assert r.headers["content-type"] == expected_type + "; charset=utf-8", url
         assert r.text == body and len(r.content) == len(body.encode()), url
 
 
@@ -4880,6 +4881,77 @@ def test_github_pull_is_served_as_the_representation_accept_names(diff_pr, accep
     r = c.get(f"/github/repos/{org}/diffable/pulls/{num}", headers={**h, "Accept": accept})
     assert r.status_code == 200
     assert r.text.startswith({"json": "{", "diff": "diff --git ", "patch": "From "}[served])
+
+
+@pytest.mark.parametrize(
+    "accept, expected",
+    [
+        ("application/vnd.github.v3.diff", "application/vnd.github.v3.diff"),
+        ("Application/vnd.github.diff", "Application/vnd.github.diff"),
+        ("application/vnd.github.diff;foo=bar", "application/vnd.github.diff"),
+        (
+            "application/json, application/vnd.github.diff",
+            "application/json,application/vnd.github.diff",
+        ),
+        ("*/*, application/vnd.github.diff", "application/vnd.github.diff,*/*"),
+        (
+            "application/json;q=0.1, application/vnd.github.diff;q=0.9, text/plain;q=0.5",
+            "application/vnd.github.diff,text/plain,application/json",
+        ),
+        (
+            "application/vnd.github.diff;q=0.9, application/json;q=0",
+            "application/vnd.github.diff,application/json",
+        ),
+        (
+            "application/vnd.github.diff, application/vnd.github.diff",
+            "application/vnd.github.diff,application/vnd.github.diff",
+        ),
+        (
+            "text/*, application/*, application/vnd.github.diff",
+            "application/vnd.github.diff,text/*,application/*",
+        ),
+        (
+            "application/vnd.github.diff;Q=0.1, application/json;q=0.5",
+            "application/vnd.github.diff,application/json",
+        ),
+        (
+            "application/vnd.github.diff;q = 0.1, application/json;q=0.5",
+            "application/vnd.github.diff,application/json",
+        ),
+        ("application/vnd.github.v3.patch+json", "application/vnd.github.v3.patch+json"),
+    ],
+)
+def test_github_pull_representation_content_type_echoes_accept(diff_pr, accept, expected):
+    """The live measurement beside `_representation_content_type`: pull 7619, version 2022-11-28.
+    Parameters are removed, not members with q=0; case and duplicates survive the stable sort.
+    """
+    c, h, org, num = diff_pr
+    r = c.get(f"/github/repos/{org}/diffable/pulls/{num}", headers={**h, "Accept": accept})
+    assert r.status_code == 200
+    assert r.headers["content-type"] == expected + "; charset=utf-8"
+    assert r.text.startswith("From " if "patch" in accept else "diff --git ")
+
+
+@pytest.mark.parametrize("suffix", ["contents/README.md", "readme"])
+@pytest.mark.parametrize(
+    "accept, expected",
+    [
+        ("application/vnd.github.v3.raw+json", "application/vnd.github.v3.raw+json"),
+        (
+            "text/plain;q=0.2, application/vnd.github.raw;q=0.9",
+            "application/vnd.github.raw,text/plain",
+        ),
+    ],
+)
+def test_github_content_raw_type_echoes_accept(
+    gh_client, gh_admin_h, gh_org, suffix, accept, expected
+):
+    """The same measurement beside `_representation_content_type`, on README contents and readme."""
+    c, _ = gh_client
+    r = c.get(f"/github/repos/{gh_org}/codebase/{suffix}", headers={**gh_admin_h, "Accept": accept})
+    assert r.status_code == 200
+    assert r.headers["content-type"] == expected + "; charset=utf-8"
+    assert r.text == _CODEBASE_README
 
 
 def test_github_pull_accept_patch_returns_an_mbox_patch(diff_pr):
