@@ -1000,13 +1000,16 @@ def _github_media(request: Request, name: str) -> bool:
     return any(t in wanted for t in _accept_types(request))
 
 
-# A parameter of an `Accept` member, as api.github.com reads one: a name of word characters and
-# dots, `=`, and a value of the same or in quotes. The first parameter that does not read so ends
-# the member's parameters, and so does anything left after the value of one that does. Measured on
-# 2026-10-22 on the pull and under the version :func:`_representation_content_type` names:
-# `application/vnd.github.diff` with `foo=a.b;q=0`, `foo=;q=0`, `foo="a-b";q=0`, `charset=utf8;q=0`
-# or `q=1;foo=bar;q=0` was the JSON pull, and with `foo=a-b;q=0`, `charset=utf-8;q=0`, `foo;q=0`,
-# `foo-bar=x;q=0`, `foo=é;q=0`, `foo=1e-1;q=0` or `q=0.5-;q=0` the diff.
+# A parameter of an `Accept` member, as api.github.com reads one: spaces or tabs, a name of ASCII
+# word characters and dots, `=`, and a value of the same or in quotes. The first parameter that does
+# not read so ends the member's parameters, and so does anything but spaces and tabs left after the
+# value of one that does. Measured on 2026-10-22 on the pull and under the version
+# :func:`_representation_content_type` names: `application/vnd.github.diff` with `foo=a.b;q=0`,
+# `foo=;q=0`, `foo="a-b";q=0`, `charset=utf8;q=0` or `q=1;foo=bar;q=0` was the JSON pull, and with
+# `foo=a-b;q=0`, `charset=utf-8;q=0`, `foo;q=0`, `foo-bar=x;q=0`, `foo=é;q=0`, `foo=1e-1;q=0` or
+# `q=0.5-;q=0` the diff. As a member's weight, `; q=0.1`, `;\tq=0.1`, `;a.b=c;q=0.1` and
+# `;q=0.9 ;q=0.1` read as `0.1`, `;foo=\xe9;q=0.1` as no `q` and `;q=0.9\xa0;q=0.1` as `0.9`, each
+# `\x..` one byte.
 _ACCEPT_PARAM = re.compile(r'[ \t]*([\w.]+)=("[^"]*"|[\w.]*)', re.ASCII)
 # The number a `q` value that `float()` cannot read, or reads as no finite number, starts with.
 _Q_LEAD = re.compile(r"\d+(?:\.\d*)?|\.\d+", re.ASCII)
@@ -1066,12 +1069,13 @@ def _representation_content_type(request: Request, unread: float | None = None) 
     `application/vnd.github.diff`. Beside a diff at `q=0.5`, `application/json` came first under
     `q=0.1;q=0.9`, `foo=bar;q=0.6`, `q="0.9"`, `charset=utf-8;q=0.1`, `foo=a-b;q=0.1` and
     `q=0.9;foo=a-b;q=0.1`, and after it under `q=0.9;q=0.1`, `foo=bar;q=0.1`, `q="0.1"`,
-    `charset=x;q=0.1` and `q=0.1-;q=0.9`; it came first under `q=9e-1`, `q=9E-1`, `q=1e-1` and
-    `q=9e-1x` too, read as the `9` or `1` they start with. Under `q=abc`, `q=`, `q=+0.9`, `q=inf`
-    and `q=-0.9` it ranked as `q=0` does on the pull (`application/json;q=abc, text/plain;q=0, …`
-    kept that order), and under those, `q= 0.9` and `q=nan` below a raw at `q=0.5` on the readme;
-    on contents all of those seven but `q=nan` ranked above the raw (``unread`` 1). Not modelled:
-    `q=nan` on contents, and `*/ *`, which the pull echoed as `*/`."""
+    `charset=x;q=0.1` and `q=0.1-;q=0.9`; it came first under `q=9e-1`, `q=9E-1`, `q=1e-1`,
+    `q=9e-1x`, `q=0.9x` and `q=.9x` too, read as the number they start with. Under `q=abc`, `q=`,
+    `q=+0.9`, `q=inf` and `q=-0.9` it ranked as `q=0` does on the pull
+    (`application/json;q=abc, text/plain;q=0, …` kept that order), and under those, `q= 0.9` and
+    `q=nan` below a raw at `q=0.5` on the readme; on contents all of those seven but `q=nan` ranked
+    above the raw (``unread`` 1). Not modelled: `q=nan` on contents, and `*/ *`, which the pull
+    echoed as `*/`."""
     members = []
     for member in request.headers.get("accept", "").split(","):
         media_type, _, params = member.partition(";")

@@ -4992,6 +4992,34 @@ def test_github_pull_is_served_as_the_representation_accept_names(diff_pr, accep
             "application/json;q=-0.9, text/plain;q=0, application/vnd.github.diff",
             "application/vnd.github.diff,application/json,text/plain",
         ),
+        (
+            "application/vnd.github.diff;q=0.5, application/json; q=0.1",
+            "application/vnd.github.diff,application/json",
+        ),
+        (
+            "application/vnd.github.diff;q=0.5, application/json;a.b=c;q=0.1",
+            "application/vnd.github.diff,application/json",
+        ),
+        (
+            "application/vnd.github.diff;q=0.5, application/json;foo=\xe9;q=0.1",
+            "application/json,application/vnd.github.diff",
+        ),
+        (
+            "application/vnd.github.diff;q=0.5, application/json;q=0.9\xa0;q=0.1",
+            "application/json,application/vnd.github.diff",
+        ),
+        (
+            "application/vnd.github.diff;q=0.5, application/json;q=0.9x",
+            "application/json,application/vnd.github.diff",
+        ),
+        (
+            "application/vnd.github.diff;q=0.5, application/json;q=.9x",
+            "application/json,application/vnd.github.diff",
+        ),
+        (
+            "application/json,\xa0application/vnd.github.diff",
+            "application/json,application/vnd.github.diff",
+        ),
     ],
 )
 def test_github_pull_representation_content_type_echoes_accept(diff_pr, accept, expected):
@@ -4999,7 +5027,8 @@ def test_github_pull_representation_content_type_echoes_accept(diff_pr, accept, 
     Parameters are removed, not members with q=0; case and duplicates survive the stable sort.
     """
     c, h, org, num = diff_pr
-    r = c.get(f"/github/repos/{org}/diffable/pulls/{num}", headers={**h, "Accept": accept})
+    headers = {**{k: v.encode() for k, v in h.items()}, "Accept": accept.encode("latin-1")}
+    r = _sent_raw(c, f"/github/repos/{org}/diffable/pulls/{num}", headers)
     assert r.status_code == 200
     assert r.headers["content-type"] == expected + "; charset=utf-8"
     assert r.text.startswith("From " if "patch" in accept else "diff --git ")
