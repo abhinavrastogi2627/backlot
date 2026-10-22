@@ -3828,8 +3828,9 @@ def test_github_raw_media_type_returns_the_bytes(gh_client, gh_admin_h, gh_org, 
 
     The tell that it isn't happening is the byte count disagreeing with the `size` the tree reported
     for the same blob, so that is what these assert against rather than "some content came back".
-    Real GitHub answers git/blobs with text/plain and contents/readme with vnd.github.raw — the same
-    bytes either way, but the difference is GitHub's own, so it is reproduced.
+    Real answers `git/blobs` with `text/plain` in each spelling (`_BLOB_RAW_TYPE`), and contents and
+    readme with the raw type as the header spells it (`_representation_content_type`): the same
+    bytes either way.
     """
     c, _ = gh_client
     sha = hashlib.sha1(_MAIN_PY.encode()).hexdigest()

@@ -1003,11 +1003,10 @@ def _github_media(request: Request, name: str) -> bool:
 # A parameter of an `Accept` member, as api.github.com reads one: a name of word characters and
 # dots, `=`, and a value of the same or in quotes. The first parameter that does not read so ends
 # the member's parameters, and so does anything left after the value of one that does. Measured on
-# 2026-10-22 on `pulls/7619` of `psf/requests` under `X-GitHub-Api-Version: 2022-11-28`:
-# `application/vnd.github.diff` with `foo=a.b;q=0`, `foo=;q=0`, `foo="a-b";q=0`,
-# `charset=utf8;q=0` or `q=1;foo=bar;q=0` was the JSON pull, and with `foo=a-b;q=0`,
-# `charset=utf-8;q=0`, `foo;q=0`, `foo-bar=x;q=0`, `foo=é;q=0`, `foo=1e-1;q=0` or `q=0.5-;q=0` the
-# diff.
+# 2026-10-22 on the pull and under the version :func:`_representation_content_type` names:
+# `application/vnd.github.diff` with `foo=a.b;q=0`, `foo=;q=0`, `foo="a-b";q=0`, `charset=utf8;q=0`
+# or `q=1;foo=bar;q=0` was the JSON pull, and with `foo=a-b;q=0`, `charset=utf-8;q=0`, `foo;q=0`,
+# `foo-bar=x;q=0`, `foo=é;q=0`, `foo=1e-1;q=0` or `q=0.5-;q=0` the diff.
 _ACCEPT_PARAM = re.compile(r'[ \t]*([\w.]+)=("[^"]*"|[\w.]*)', re.ASCII)
 # The number a `q` value that `float()` cannot read, or reads as no finite number, starts with.
 _Q_LEAD = re.compile(r"\d+(?:\.\d*)?|\.\d+", re.ASCII)
@@ -1096,8 +1095,10 @@ def _raw_response(
     return Response(content=content.encode(), headers={"Content-Type": content_type})
 
 
-# A raw git blob's type, whatever `Accept` names: `application/json, application/vnd.github.raw`
-# on `git/blobs` was `text/plain; charset=utf-8` on api.github.com on 2026-10-21.
+# A raw git blob's type, however `Accept` spells the raw type: api.github.com answered `git/blobs`
+# with it under `application/json, application/vnd.github.raw` on 2026-10-21, and under
+# `application/vnd.github.raw`, `…v3.raw`, `…raw+json`, `…v3.raw+json`,
+# `Application/vnd.GitHub.V3.raw+JSON` and `application/vnd.github.raw;q=0` on 2026-10-22.
 _BLOB_RAW_TYPE = "text/plain; charset=utf-8"
 
 
