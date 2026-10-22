@@ -4919,6 +4919,78 @@ def test_github_pull_is_served_as_the_representation_accept_names(diff_pr, accep
             "application/vnd.github.diff,application/json",
         ),
         ("application/vnd.github.v3.patch+json", "application/vnd.github.v3.patch+json"),
+        ("*/*, text/*, application/vnd.github.diff", "application/vnd.github.diff,text/*,*/*"),
+        (
+            "application/*, */*, text/*, application/vnd.github.diff",
+            "application/vnd.github.diff,application/*,text/*,*/*",
+        ),
+        ("application/vnd.github.diff,", "application/vnd.github.diff"),
+        (",application/vnd.github.diff", "application/vnd.github.diff"),
+        (";q=0.5, application/vnd.github.diff", "application/vnd.github.diff"),
+        (
+            "application/vnd.github.diff,,application/json",
+            "application/vnd.github.diff,application/json",
+        ),
+        (
+            "application/vnd.github.diff;q=0.5, application/json;q=0.1;q=0.9",
+            "application/json,application/vnd.github.diff",
+        ),
+        (
+            "application/vnd.github.diff;q=0.5, application/json;q=0.9;q=0.1",
+            "application/vnd.github.diff,application/json",
+        ),
+        (
+            "application/vnd.github.diff;q=0.5, application/json;foo=bar;q=0.1",
+            "application/vnd.github.diff,application/json",
+        ),
+        (
+            "application/vnd.github.diff;q=0.5, application/json;charset=utf-8;q=0.1",
+            "application/json,application/vnd.github.diff",
+        ),
+        (
+            "application/vnd.github.diff;q=0.5, application/json;q=+0.9",
+            "application/vnd.github.diff,application/json",
+        ),
+        (
+            "application/vnd.github.diff;q=0.5, application/json;q= 0.9",
+            "application/vnd.github.diff,application/json",
+        ),
+        (
+            "application/vnd.github.diff;q=0.5, application/json;q=inf",
+            "application/vnd.github.diff,application/json",
+        ),
+        (
+            'application/json;q="0.1", application/vnd.github.diff;q=0.5',
+            "application/vnd.github.diff,application/json",
+        ),
+        (
+            "application/json;q=abc, text/plain;q=0, application/vnd.github.diff",
+            "application/vnd.github.diff,application/json,text/plain",
+        ),
+        (
+            "application/vnd.github.diff;q=0.5, application/json;foo=a-b;q=0.1",
+            "application/json,application/vnd.github.diff",
+        ),
+        (
+            "application/vnd.github.diff;q=0.5, application/json;q=0.1-;q=0.9",
+            "application/vnd.github.diff,application/json",
+        ),
+        (
+            "application/vnd.github.diff;q=0.5, application/json;charset=x;q=0.1",
+            "application/vnd.github.diff,application/json",
+        ),
+        (
+            "application/vnd.github.diff;q=0.5, application/json;q=1e-1",
+            "application/json,application/vnd.github.diff",
+        ),
+        (
+            'application/vnd.github.diff;q=0.5, application/json;q="0.9"',
+            "application/json,application/vnd.github.diff",
+        ),
+        (
+            "application/json;q=-0.9, text/plain;q=0, application/vnd.github.diff",
+            "application/vnd.github.diff,application/json,text/plain",
+        ),
     ],
 )
 def test_github_pull_representation_content_type_echoes_accept(diff_pr, accept, expected):
@@ -4932,21 +5004,64 @@ def test_github_pull_representation_content_type_echoes_accept(diff_pr, accept, 
     assert r.text.startswith("From " if "patch" in accept else "diff --git ")
 
 
-@pytest.mark.parametrize("suffix", ["contents/README.md", "readme"])
 @pytest.mark.parametrize(
-    "accept, expected",
+    "suffix, accept, expected",
     [
-        ("application/vnd.github.v3.raw+json", "application/vnd.github.v3.raw+json"),
         (
+            "contents/README.md",
+            "application/vnd.github.v3.raw+json",
+            "application/vnd.github.v3.raw+json",
+        ),
+        (
+            "contents/README.md",
             "text/plain;q=0.2, application/vnd.github.raw;q=0.9",
             "application/vnd.github.raw,text/plain",
+        ),
+        ("contents/README.md", "application/vnd.github.raw,", "application/vnd.github.raw"),
+        (
+            "contents/README.md",
+            "*/*, text/*, application/vnd.github.raw",
+            "application/vnd.github.raw,text/*,*/*",
+        ),
+        ("readme", "application/vnd.github.v3.raw+json", "application/vnd.github.v3.raw+json"),
+        (
+            "readme",
+            "text/plain;q=0.2, application/vnd.github.raw;q=0.9",
+            "application/vnd.github.raw,text/plain",
+        ),
+        ("readme", "application/vnd.github.raw,", "application/vnd.github.raw"),
+        (
+            "readme",
+            "*/*, text/*, application/vnd.github.raw",
+            "application/vnd.github.raw,text/*,*/*",
+        ),
+        (
+            "contents/README.md",
+            "application/vnd.github.raw;q=0.5, application/json;q=abc",
+            "application/json,application/vnd.github.raw",
+        ),
+        (
+            "readme",
+            "application/vnd.github.raw;q=0.5, application/json;q=abc",
+            "application/vnd.github.raw,application/json",
+        ),
+        (
+            "contents/README.md",
+            "application/vnd.github.raw;q=0.5, application/json;q= 0.9",
+            "application/json,application/vnd.github.raw",
+        ),
+        (
+            "readme",
+            "application/vnd.github.raw;q=0.5, application/json;q= 0.9",
+            "application/vnd.github.raw,application/json",
         ),
     ],
 )
 def test_github_content_raw_type_echoes_accept(
     gh_client, gh_admin_h, gh_org, suffix, accept, expected
 ):
-    """The same measurement beside `_representation_content_type`, on README contents and readme."""
+    """The same measurement beside `_representation_content_type`, on README contents and readme,
+    which read a `q` that is no number differently."""
     c, _ = gh_client
     r = c.get(f"/github/repos/{gh_org}/codebase/{suffix}", headers={**gh_admin_h, "Accept": accept})
     assert r.status_code == 200
