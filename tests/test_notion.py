@@ -83,32 +83,17 @@ def test_notion_a_credential_it_cannot_use_names_the_format_or_the_token(
     assert r.json()["message"] == message, label
     if message == _NOT_A_BEARER:
         assert "additional_data" not in r.json()
+        assert list(r.json()) == ["object", "status", "code", "message", "request_id"], label
     else:
         assert r.json()["additional_data"] == {"reason": "token_invalid"}
-
-
-@pytest.mark.parametrize("version", ["2025-09-03", "2022-06-28", None])
-@pytest.mark.parametrize("token", ["ntn_bogus", "secret_abc"])
-@pytest.mark.parametrize(
-    "method, path", [("GET", "users"), ("GET", "users/me"), ("POST", "search")]
-)
-def test_notion_invalid_token_names_its_reason_before_the_request_id(
-    client, version, token, method, path
-):
-    """The api.notion.com measurement beside `_refusal`: a bearer with an invalid token."""
-    headers = {"Authorization": f"Bearer {token}"}
-    if version is not None:
-        headers["Notion-Version"] = version
-    response = client.request(
-        method, f"/notion/v1/{path}", headers=headers, **({"json": {}} if method == "POST" else {})
-    )
-    assert response.status_code == 401
-    body = response.json()
-    assert body["code"] == "unauthorized"
-    assert body["message"] == "API token is invalid."
-    assert body["additional_data"] == {"reason": "token_invalid"}
-    assert list(body) == ["object", "status", "code", "message", "additional_data", "request_id"]
-    assert body["request_id"] == response.headers["x-notion-request-id"]
+        assert list(r.json()) == [
+            "object",
+            "status",
+            "code",
+            "message",
+            "additional_data",
+            "request_id",
+        ], label
 
 
 def test_notion_every_answer_names_itself_by_a_request_id(client, notion_h):
