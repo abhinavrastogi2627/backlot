@@ -1132,18 +1132,22 @@ def _accept_types(request: Request) -> list[str]:
     contents, readme and blobs and `text-match` on code search read those spellings the same way.
     A ``diff`` whose ``q`` weight reads as zero (:func:`_zero_q`) is left out, and no other name
     is: `patch;q=0`, `raw;q=0` and `text-match+json;q=0` are served as asked, and so is a diff
-    under `Q=0`, `q = 0` or a `q` after `charset=utf-8`."""
+    under `Q=0`, `q = 0` or a `q` after `charset=utf-8`. A patch named beside a zero-weight diff
+    keeps the diff too (the later body-selection measurement beside `_github_media`)."""
     types: list[str] = []
+    zero_diffs: set[int] = set()
+    has_patch = False
     for member in request.headers.get("accept", "").split(","):
         media_type, _, params = member.partition(";")
         media_type = media_type.strip()
         m = _GITHUB_MEDIA.fullmatch(media_type)
         if m is not None:
             if m[2] == "diff" and _zero_q(params):
-                continue
+                zero_diffs.add(len(types))
+            has_patch |= m[2] == "patch"
             media_type = m[1].lower() + m[2] + (m[3] or "").lower()
         types.append(media_type)
-    return types
+    return [t for i, t in enumerate(types) if has_patch or i not in zero_diffs]
 
 
 def _zero_q(params: str) -> bool:
@@ -1160,16 +1164,27 @@ def _zero_q(params: str) -> bool:
         return False
 
 
-def _github_media(request: Request, name: str) -> bool:
+def _github_media(request: Request, name: str, *, unread: float | None = None) -> bool:
     """True if `Accept` asks for GitHub's ``<name>`` representation, in any of the spellings the
     real API honours: ``application/vnd.github.<name>``, the legacy ``…github.v3.<name>``, and the
-    ``…github.<name>+json`` form."""
+    ``…github.<name>+json`` form.
+
+    Measured on api.github.com on 2026-10-26, under 2022-11-28, on psf/requests pull 7619 and
+    README.md through contents, readme and git/blobs: a leading, heavier `*/*` serves JSON;
+    at the same weight the concrete type wins, and application/json or application/* ahead of
+    the representation does not suppress it. A pull asking for both diff and patch gets the diff,
+    even with diff at q=0. Code search's text-match is not suppressed by a heavier `*/*`."""
     wanted = {
         f"application/vnd.github.{v}{name}{suffix}"
         for v in ("", "v3.")  # the legacy version segment GitHub's own docs used
         for suffix in ("", "+json")
     }
-    return any(t in wanted for t in _accept_types(request))
+    if not any(t in wanted for t in _accept_types(request)):
+        return False
+    if name == "text-match":
+        return True
+    members = _ordered_accept(request, unread)
+    return not members or members[0][0] != "*/*"
 
 
 # A parameter of an `Accept` member, as api.github.com reads one: spaces or tabs, a name of ASCII
@@ -1221,6 +1236,18 @@ def _q_weight(params: str, unread: float | None = None) -> float:
     return float(lead[0]) if lead else 0.0
 
 
+def _ordered_accept(request: Request, unread: float | None = None) -> list[tuple[str, float]]:
+    """Members in the order `_representation_content_type` measures."""
+    members = []
+    for member in request.headers.get("accept", "").split(","):
+        media_type, _, params = member.partition(";")
+        media_type = media_type.strip()
+        if media_type:
+            members.append((media_type, _q_weight(params, unread)))
+    members.sort(key=lambda m: (-m[1], m[0].count("*")))
+    return members
+
+
 def _representation_content_type(request: Request, unread: float | None = None) -> str:
     """The `Content-Type` of a diff, a patch, or a raw file or readme: each `Accept` member with
     nothing after its `;`, spelt as sent, heaviest first (:func:`_q_weight`, with ``unread``), and
@@ -1248,14 +1275,7 @@ def _representation_content_type(request: Request, unread: float | None = None) 
     `q=nan` below a raw at `q=0.5` on the readme; on contents all of those seven but `q=nan` ranked
     above the raw (``unread`` 1). Not modelled: `q=nan` on contents, and `*/ *`, which the pull
     echoed as `*/`."""
-    members = []
-    for member in request.headers.get("accept", "").split(","):
-        media_type, _, params = member.partition(";")
-        media_type = media_type.strip()
-        if not media_type:
-            continue
-        members.append((media_type, _q_weight(params, unread)))
-    members.sort(key=lambda m: (-m[1], m[0].count("*")))
+    members = _ordered_accept(request, unread)
     return ",".join(media_type for media_type, _ in members) + "; charset=utf-8"
 
 
@@ -1265,7 +1285,7 @@ def _raw_response(
     """The raw body when the caller asked for it, else ``None`` so the handler falls through to its
     JSON envelope. A blob names ``media_type``; contents and readme name what they were sent
     (`_representation_content_type`)."""
-    if not _github_media(request, "raw"):
+    if not _github_media(request, "raw", unread=unread):
         return None
     content_type = media_type or _representation_content_type(request, unread)
     return Response(content=content.encode(), headers={"Content-Type": content_type})
@@ -2781,7 +2801,7 @@ async def get_pull(owner: str, repo: str, number: int, request: Request):
     files = _pr_files(conn, owner, repo, row, ab, ids)
     obj = _pr_obj(conn, owner, repo, row, ab, ids=ids, files=files, version=_version(request))
     diff = _pr_diff(files, obj["base"]["sha"])
-    if wants_patch:
+    if wants_patch and not wants_diff:
         return Response(
             content=_pr_mbox(row, obj, diff).encode(),
             headers={"Content-Type": _representation_content_type(request)},

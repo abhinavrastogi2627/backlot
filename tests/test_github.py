@@ -2161,6 +2161,7 @@ def test_github_code_search_text_matches_only_under_the_media_type(gh_client, gh
     for accept, matched in (
         ("application/vnd.github.TEXT-MATCH+json", False),
         ("application/vnd.github.text-match+json;q=0", True),
+        ("*/*;q=0.9, application/vnd.github.text-match+json;q=0.5", True),
     ):
         h = {**gh_admin_h, "Accept": accept}
         hit = c.get("/github/search/code", headers=h, params={"q": "helper"}).json()["items"][0]
@@ -5313,6 +5314,63 @@ def test_github_pull_accept_patch_returns_an_mbox_patch(diff_pr):
     assert r.text.startswith("From ")
     assert "Subject: [PATCH] Tighten the run() argv handling" in r.text
     assert "diff --git " in r.text
+
+
+@pytest.mark.parametrize(
+    "accept, kind",
+    [
+        ("application/vnd.github.diff, application/vnd.github.patch", "diff"),
+        ("application/vnd.github.patch, application/vnd.github.diff", "diff"),
+        ("application/vnd.github.diff;q=0.1, application/vnd.github.patch;q=0.9", "diff"),
+        ("application/vnd.github.patch;q=0.1, application/vnd.github.diff;q=0.9", "diff"),
+        ("application/vnd.github.diff;q=0, application/vnd.github.patch", "diff"),
+        ("application/vnd.github.patch;q=0, application/vnd.github.diff", "diff"),
+        ("*/*;q=0.9, application/vnd.github.diff;q=0.5", "json"),
+        ("application/vnd.github.diff;q=0.5, */*;q=0.9", "json"),
+        ("*/*;q=0.9, application/vnd.github.patch;q=0.5", "json"),
+        ("*/*;q=0.5, application/vnd.github.diff;q=0.5", "diff"),
+        ("application/json;q=0.9, application/vnd.github.diff;q=0.5", "diff"),
+        ("application/*;q=0.9, application/vnd.github.diff;q=0.5", "diff"),
+        ("*/*;q=0.9, application/vnd.github.diff;q=0.5, application/vnd.github.patch", "diff"),
+    ],
+)
+def test_github_pull_selects_the_measured_representation(diff_pr, accept, kind):
+    """The live body-selection measurement beside `_github_media`."""
+    c, h, org, num = diff_pr
+    response = c.get(f"/github/repos/{org}/diffable/pulls/{num}", headers={**h, "Accept": accept})
+    assert response.status_code == 200
+    if kind == "json":
+        assert response.json()["number"] == num
+        assert response.headers["content-type"] == "application/json; charset=utf-8"
+    else:
+        assert response.text.startswith("diff --git ")
+
+
+@pytest.mark.parametrize("route", ["contents/src/main.py", "readme", "blob"])
+@pytest.mark.parametrize(
+    "accept, raw",
+    [
+        ("*/*;q=0.9, application/vnd.github.raw;q=0.5", False),
+        ("application/vnd.github.raw;q=0.5, */*;q=0.9", False),
+        ("*/*;q=0.5, application/vnd.github.raw;q=0.5", True),
+        ("application/json;q=0.9, application/vnd.github.raw;q=0.5", True),
+    ],
+)
+def test_github_raw_selection_respects_a_heavier_global_wildcard(
+    gh_client, gh_admin_h, gh_org, route, accept, raw
+):
+    c, _ = gh_client
+    body = _CODEBASE_README if route == "readme" else _MAIN_PY
+    if route == "blob":
+        route = "git/blobs/" + hashlib.sha1(_MAIN_PY.encode()).hexdigest()
+    response = c.get(
+        f"/github/repos/{gh_org}/codebase/{route}", headers={**gh_admin_h, "Accept": accept}
+    )
+    assert response.status_code == 200
+    if raw:
+        assert response.text == body
+    else:
+        assert base64.b64decode(response.json()["content"]).decode() == body
 
 
 def test_github_oversized_patch_is_omitted_from_json_but_kept_in_the_diff(diff_pr, monkeypatch):
