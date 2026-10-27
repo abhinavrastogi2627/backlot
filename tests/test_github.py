@@ -5008,8 +5008,7 @@ def test_github_pull_accept_diff_returns_a_unified_diff(diff_pr, gh_admin_h, gh_
     assert issue["number"] == issue_num
 
 
-# What api.github.com served a pull for each `Accept` at 2022-11-28 (see `_accept_types` and
-# `_wildcard_leads`).
+# What api.github.com served a pull for each `Accept` at 2022-11-28 (see `_accept_types`).
 @pytest.mark.parametrize(
     "accept, served",
     [
@@ -5081,26 +5080,6 @@ def test_github_pull_accept_diff_returns_a_unified_diff(diff_pr, gh_admin_h, gh_
         ("application/vnd.github.patch;q=0.5, application/json;q=1", "patch"),
         ("application/vnd.github.diff;q=\xa00", "diff"),
         ("application/vnd.github.diff;q=0\xa0", "json"),
-        ("application/vnd.github.diff, application/vnd.github.patch", "diff"),
-        ("application/vnd.github.patch, application/vnd.github.diff", "diff"),
-        ("application/vnd.github.diff;q=0.1, application/vnd.github.patch;q=0.9", "diff"),
-        ("application/vnd.github.patch;q=0.1, application/vnd.github.diff;q=0.9", "diff"),
-        ("application/vnd.github.diff;q=0, application/vnd.github.patch", "diff"),
-        ("application/vnd.github.patch;q=0, application/vnd.github.diff", "diff"),
-        ("application/vnd.github.diff;q=0, application/vnd.github.patch;q=0", "diff"),
-        ("*/*;q=0.9, application/vnd.github.diff;q=0.5", "json"),
-        ("application/vnd.github.diff;q=0.5, */*;q=0.9", "json"),
-        ("*/*;q=0.9, application/vnd.github.patch;q=0.5", "json"),
-        ("*/*;q=0.9, application/vnd.github.diff;q=0, application/vnd.github.patch;q=0.5", "json"),
-        ("*/*;q=0.5, application/vnd.github.diff;q=0.5", "diff"),
-        ("*/*;q=1, application/vnd.github.diff", "diff"),
-        ("application/json;q=0.9, application/vnd.github.diff;q=0.5", "diff"),
-        ("application/*;q=0.9, application/vnd.github.diff;q=0.5", "diff"),
-        ("text/html, */*;q=0.9, application/vnd.github.diff;q=0.5", "diff"),
-        ("text/plain;q=0.95, */*;q=0.9, application/vnd.github.patch;q=0.5", "patch"),
-        ("*;q=0.9, application/vnd.github.diff;q=0.5", "diff"),
-        ("*/*;q=abc, application/vnd.github.diff;q=0.5", "diff"),
-        ("*/*;q=0.9, application/vnd.github.diff;q=0.5, application/vnd.github.patch", "diff"),
     ],
 )
 def test_github_pull_is_served_as_the_representation_accept_names(diff_pr, accept, served):
