@@ -4506,6 +4506,8 @@ def test_github_unsupported_api_version_is_refused_ahead_of_a_missing_credential
         ("pulls/1", "Application/vnd.github.diff", False, False),
         ("pulls/1", "application/vnd.github.diff;q=0", True, False),
         ("pulls/1", "application/vnd.github.patch;q=0", False, False),
+        ("pulls/1", "*/*;q=0.9, application/vnd.github.diff;q=0.5", False, False),
+        ("pulls/1", "*/*;q=0.9, application/vnd.github.patch;q=0.5", False, False),
         ("pulls/1", "application/vnd.github.sha", True, False),
         *[
             (path, accept, True, True)
@@ -5006,7 +5008,8 @@ def test_github_pull_accept_diff_returns_a_unified_diff(diff_pr, gh_admin_h, gh_
     assert issue["number"] == issue_num
 
 
-# What api.github.com served a pull for each `Accept` at 2022-11-28 (see `_accept_types`).
+# What api.github.com served a pull for each `Accept` at 2022-11-28 (see `_accept_types` and
+# `_wildcard_leads`).
 @pytest.mark.parametrize(
     "accept, served",
     [
@@ -5078,6 +5081,26 @@ def test_github_pull_accept_diff_returns_a_unified_diff(diff_pr, gh_admin_h, gh_
         ("application/vnd.github.patch;q=0.5, application/json;q=1", "patch"),
         ("application/vnd.github.diff;q=\xa00", "diff"),
         ("application/vnd.github.diff;q=0\xa0", "json"),
+        ("application/vnd.github.diff, application/vnd.github.patch", "diff"),
+        ("application/vnd.github.patch, application/vnd.github.diff", "diff"),
+        ("application/vnd.github.diff;q=0.1, application/vnd.github.patch;q=0.9", "diff"),
+        ("application/vnd.github.patch;q=0.1, application/vnd.github.diff;q=0.9", "diff"),
+        ("application/vnd.github.diff;q=0, application/vnd.github.patch", "diff"),
+        ("application/vnd.github.patch;q=0, application/vnd.github.diff", "diff"),
+        ("application/vnd.github.diff;q=0, application/vnd.github.patch;q=0", "diff"),
+        ("*/*;q=0.9, application/vnd.github.diff;q=0.5", "json"),
+        ("application/vnd.github.diff;q=0.5, */*;q=0.9", "json"),
+        ("*/*;q=0.9, application/vnd.github.patch;q=0.5", "json"),
+        ("*/*;q=0.9, application/vnd.github.diff;q=0, application/vnd.github.patch;q=0.5", "json"),
+        ("*/*;q=0.5, application/vnd.github.diff;q=0.5", "diff"),
+        ("*/*;q=1, application/vnd.github.diff", "diff"),
+        ("application/json;q=0.9, application/vnd.github.diff;q=0.5", "diff"),
+        ("application/*;q=0.9, application/vnd.github.diff;q=0.5", "diff"),
+        ("text/html, */*;q=0.9, application/vnd.github.diff;q=0.5", "diff"),
+        ("text/plain;q=0.95, */*;q=0.9, application/vnd.github.patch;q=0.5", "patch"),
+        ("*;q=0.9, application/vnd.github.diff;q=0.5", "diff"),
+        ("*/*;q=abc, application/vnd.github.diff;q=0.5", "diff"),
+        ("*/*;q=0.9, application/vnd.github.diff;q=0.5, application/vnd.github.patch", "diff"),
     ],
 )
 def test_github_pull_is_served_as_the_representation_accept_names(diff_pr, accept, served):
@@ -5316,58 +5339,40 @@ def test_github_pull_accept_patch_returns_an_mbox_patch(diff_pr):
     assert "diff --git " in r.text
 
 
+# What api.github.com served for each `Accept` beside a raw at 2022-11-28: the raw bytes on the
+# routes the second column names, the JSON envelope on the others (see `_wildcard_leads`).
+@pytest.mark.parametrize("route", ["contents", "readme", "blob"])
 @pytest.mark.parametrize(
-    "accept, kind",
+    "accept, raw_on",
     [
-        ("application/vnd.github.diff, application/vnd.github.patch", "diff"),
-        ("application/vnd.github.patch, application/vnd.github.diff", "diff"),
-        ("application/vnd.github.diff;q=0.1, application/vnd.github.patch;q=0.9", "diff"),
-        ("application/vnd.github.patch;q=0.1, application/vnd.github.diff;q=0.9", "diff"),
-        ("application/vnd.github.diff;q=0, application/vnd.github.patch", "diff"),
-        ("application/vnd.github.patch;q=0, application/vnd.github.diff", "diff"),
-        ("*/*;q=0.9, application/vnd.github.diff;q=0.5", "json"),
-        ("application/vnd.github.diff;q=0.5, */*;q=0.9", "json"),
-        ("*/*;q=0.9, application/vnd.github.patch;q=0.5", "json"),
-        ("*/*;q=0.5, application/vnd.github.diff;q=0.5", "diff"),
-        ("application/json;q=0.9, application/vnd.github.diff;q=0.5", "diff"),
-        ("application/*;q=0.9, application/vnd.github.diff;q=0.5", "diff"),
-        ("*/*;q=0.9, application/vnd.github.diff;q=0.5, application/vnd.github.patch", "diff"),
-    ],
-)
-def test_github_pull_selects_the_measured_representation(diff_pr, accept, kind):
-    """The live body-selection measurement beside `_github_media`."""
-    c, h, org, num = diff_pr
-    response = c.get(f"/github/repos/{org}/diffable/pulls/{num}", headers={**h, "Accept": accept})
-    assert response.status_code == 200
-    if kind == "json":
-        assert response.json()["number"] == num
-        assert response.headers["content-type"] == "application/json; charset=utf-8"
-    else:
-        assert response.text.startswith("diff --git ")
-
-
-@pytest.mark.parametrize("route", ["contents/src/main.py", "readme", "blob"])
-@pytest.mark.parametrize(
-    "accept, raw",
-    [
-        ("*/*;q=0.9, application/vnd.github.raw;q=0.5", False),
-        ("application/vnd.github.raw;q=0.5, */*;q=0.9", False),
-        ("*/*;q=0.5, application/vnd.github.raw;q=0.5", True),
-        ("application/json;q=0.9, application/vnd.github.raw;q=0.5", True),
+        ("*/*;q=0.9, application/vnd.github.raw;q=0.5", ()),
+        ("application/vnd.github.raw;q=0.5, */*;q=0.9", ()),
+        ("*/*;q=0.9x, application/vnd.github.raw;q=0.5", ()),
+        ("*/*;q=0.5, application/vnd.github.raw;q=0.5", ("contents", "readme", "blob")),
+        (
+            "application/json;q=0.9, application/vnd.github.raw;q=0.5",
+            ("contents", "readme", "blob"),
+        ),
+        ("text/html, */*;q=0.9, application/vnd.github.raw;q=0.5", ("contents", "readme", "blob")),
+        ("*;q=0.9, application/vnd.github.raw;q=0.5", ("contents", "readme", "blob")),
+        ("*/*;q=abc, application/vnd.github.raw;q=0.5", ("readme", "blob")),
     ],
 )
 def test_github_raw_selection_respects_a_heavier_global_wildcard(
-    gh_client, gh_admin_h, gh_org, route, accept, raw
+    gh_client, gh_admin_h, gh_org, route, accept, raw_on
 ):
     c, _ = gh_client
     body = _CODEBASE_README if route == "readme" else _MAIN_PY
-    if route == "blob":
-        route = "git/blobs/" + hashlib.sha1(_MAIN_PY.encode()).hexdigest()
+    path = {
+        "contents": "contents/src/main.py",
+        "readme": "readme",
+        "blob": "git/blobs/" + hashlib.sha1(_MAIN_PY.encode()).hexdigest(),
+    }[route]
     response = c.get(
-        f"/github/repos/{gh_org}/codebase/{route}", headers={**gh_admin_h, "Accept": accept}
+        f"/github/repos/{gh_org}/codebase/{path}", headers={**gh_admin_h, "Accept": accept}
     )
     assert response.status_code == 200
-    if raw:
+    if route in raw_on:
         assert response.text == body
     else:
         assert base64.b64decode(response.json()["content"]).decode() == body

@@ -229,8 +229,9 @@ def _answered_by_backend(request: Request) -> bool:
     one-member body, newline and empty Selected header, ahead of a missing repository or path and
     of a missing credential, though a bad bearer is still `Bad credentials` first. A pull
     `_github_media` reads as a diff or a patch keeps the gateway's envelope, a diff after
-    `application/json` included, and so does a HEAD on the pull whatever `Accept` holds, where a
-    HEAD on contents is the backend's (measured 2026-10-19).
+    `application/json` included and one whose body a heavier `*/*` makes the JSON pull (measured
+    2026-10-27), and so does a HEAD on the pull whatever `Accept` holds, where a HEAD on contents
+    is the backend's (measured 2026-10-19).
     """
     route = getattr(request.scope.get("route"), "path", None)
     return route in {
@@ -1132,8 +1133,8 @@ def _accept_types(request: Request) -> list[str]:
     contents, readme and blobs and `text-match` on code search read those spellings the same way.
     A ``diff`` whose ``q`` weight reads as zero (:func:`_zero_q`) is left out, and no other name
     is: `patch;q=0`, `raw;q=0` and `text-match+json;q=0` are served as asked, and so is a diff
-    under `Q=0`, `q = 0` or a `q` after `charset=utf-8`. A patch named beside a zero-weight diff
-    keeps the diff too (the later body-selection measurement beside `_github_media`)."""
+    under `Q=0`, `q = 0` or a `q` after `charset=utf-8`. A zero-weight diff is kept beside a named
+    patch: `diff;q=0, patch` and `diff;q=0, patch;q=0` were the diff on 2026-10-27."""
     types: list[str] = []
     zero_diffs: set[int] = set()
     has_patch = False
@@ -1164,27 +1165,16 @@ def _zero_q(params: str) -> bool:
         return False
 
 
-def _github_media(request: Request, name: str, *, unread: float | None = None) -> bool:
-    """True if `Accept` asks for GitHub's ``<name>`` representation, in any of the spellings the
-    real API honours: ``application/vnd.github.<name>``, the legacy ``…github.v3.<name>``, and the
-    ``…github.<name>+json`` form.
-
-    Measured on api.github.com on 2026-10-26, under 2022-11-28, on psf/requests pull 7619 and
-    README.md through contents, readme and git/blobs: a leading, heavier `*/*` serves JSON;
-    at the same weight the concrete type wins, and application/json or application/* ahead of
-    the representation does not suppress it. A pull asking for both diff and patch gets the diff,
-    even with diff at q=0. Code search's text-match is not suppressed by a heavier `*/*`."""
+def _github_media(request: Request, name: str) -> bool:
+    """True if `Accept` names GitHub's ``<name>`` representation, in any of the spellings the real
+    API honours: ``application/vnd.github.<name>``, the legacy ``…github.v3.<name>``, and the
+    ``…github.<name>+json`` form. A route that serves it asks :func:`_wildcard_leads` too."""
     wanted = {
         f"application/vnd.github.{v}{name}{suffix}"
         for v in ("", "v3.")  # the legacy version segment GitHub's own docs used
         for suffix in ("", "+json")
     }
-    if not any(t in wanted for t in _accept_types(request)):
-        return False
-    if name == "text-match":
-        return True
-    members = _ordered_accept(request, unread)
-    return not members or members[0][0] != "*/*"
+    return any(t in wanted for t in _accept_types(request))
 
 
 # A parameter of an `Accept` member, as api.github.com reads one: spaces or tabs, a name of ASCII
@@ -1248,6 +1238,23 @@ def _ordered_accept(request: Request, unread: float | None = None) -> list[tuple
     return members
 
 
+def _wildcard_leads(request: Request, unread: float | None = None) -> bool:
+    """Whether `*/*` comes first in the order :func:`_ordered_accept` gives `Accept`'s members,
+    which serves a pull, a file's contents, a readme or a blob as its JSON in place of the diff,
+    patch or raw `Accept` names.
+
+    Measured on api.github.com on 2026-10-26 and 2026-10-27 under 2022-11-28, on `pulls/7619` of
+    `psf/requests` and its `README.md` through `contents`, `readme` and `git/blobs`: a heavier `*/*`
+    serves the JSON on whichever side of the representation it is sent; at the same weight the
+    representation is served, and so it is behind a type heavier than `*/*` (`text/html`,
+    `application/json`, and on the pull `application/*`) or behind a bare `*`. A weight `float()`
+    cannot read ranks as :func:`_q_weight` reads it with ``unread``: `*/*;q=abc` leads on contents
+    (``unread`` 1) and not on the pull, the readme or the blob. Code search serves `text-match`
+    beside a heavier `*/*` too, and does not ask."""
+    members = _ordered_accept(request, unread)
+    return bool(members) and members[0][0] == "*/*"
+
+
 def _representation_content_type(request: Request, unread: float | None = None) -> str:
     """The `Content-Type` of a diff, a patch, or a raw file or readme: each `Accept` member with
     nothing after its `;`, spelt as sent, heaviest first (:func:`_q_weight`, with ``unread``), and
@@ -1285,7 +1292,7 @@ def _raw_response(
     """The raw body when the caller asked for it, else ``None`` so the handler falls through to its
     JSON envelope. A blob names ``media_type``; contents and readme name what they were sent
     (`_representation_content_type`)."""
-    if not _github_media(request, "raw", unread=unread):
+    if not _github_media(request, "raw") or _wildcard_leads(request, unread):
         return None
     content_type = media_type or _representation_content_type(request, unread)
     return Response(content=content.encode(), headers={"Content-Type": content_type})
@@ -2796,11 +2803,12 @@ async def get_pull(owner: str, repo: str, number: int, request: Request):
         raise HTTPException(status_code=404, detail="Not Found")
     ab = _api_base(request)
     wants_diff, wants_patch = _github_media(request, "diff"), _github_media(request, "patch")
-    if not (wants_diff or wants_patch):
+    if not (wants_diff or wants_patch) or _wildcard_leads(request):
         return _pr_obj(conn, owner, repo, row, ab, ids=ids, version=_version(request))
     files = _pr_files(conn, owner, repo, row, ab, ids)
     obj = _pr_obj(conn, owner, repo, row, ab, ids=ids, files=files, version=_version(request))
     diff = _pr_diff(files, obj["base"]["sha"])
+    # A diff named beside a patch is served, at any weight of either (measured 2026-10-26).
     if wants_patch and not wants_diff:
         return Response(
             content=_pr_mbox(row, obj, diff).encode(),
