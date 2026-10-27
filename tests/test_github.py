@@ -5068,7 +5068,8 @@ def test_github_pull_accept_diff_returns_a_unified_diff(diff_pr, gh_admin_h, gh_
     assert issue["number"] == issue_num
 
 
-# What api.github.com served a pull for each `Accept` at 2022-11-28 (see `_accept_types`).
+# What api.github.com served a pull for each `Accept` at 2022-11-28 (see `_accept_types` and
+# `_wildcard_leads`).
 _PULL_SERVED_AS = {
     "application/vnd.github.DIFF": "json",
     "APPLICATION/VND.GITHUB.DIFF": "json",
@@ -5138,6 +5139,26 @@ _PULL_SERVED_AS = {
     "application/vnd.github.patch;q=0.5, application/json;q=1": "patch",
     "application/vnd.github.diff;q=\xa00": "diff",
     "application/vnd.github.diff;q=0\xa0": "json",
+    "application/vnd.github.diff, application/vnd.github.patch": "diff",
+    "application/vnd.github.patch, application/vnd.github.diff": "diff",
+    "application/vnd.github.diff;q=0.1, application/vnd.github.patch;q=0.9": "diff",
+    "application/vnd.github.patch;q=0.1, application/vnd.github.diff;q=0.9": "diff",
+    "application/vnd.github.diff;q=0, application/vnd.github.patch": "diff",
+    "application/vnd.github.patch;q=0, application/vnd.github.diff": "diff",
+    "application/vnd.github.diff;q=0, application/vnd.github.patch;q=0": "diff",
+    "*/*;q=0.9, application/vnd.github.diff;q=0.5": "json",
+    "application/vnd.github.diff;q=0.5, */*;q=0.9": "json",
+    "*/*;q=0.9, application/vnd.github.patch;q=0.5": "json",
+    "*/*;q=0.9, application/vnd.github.diff;q=0, application/vnd.github.patch;q=0.5": "json",
+    "*/*;q=0.5, application/vnd.github.diff;q=0.5": "diff",
+    "*/*;q=1, application/vnd.github.diff": "diff",
+    "application/json;q=0.9, application/vnd.github.diff;q=0.5": "diff",
+    "application/*;q=0.9, application/vnd.github.diff;q=0.5": "diff",
+    "text/html, */*;q=0.9, application/vnd.github.diff;q=0.5": "diff",
+    "text/plain;q=0.95, */*;q=0.9, application/vnd.github.patch;q=0.5": "patch",
+    "*;q=0.9, application/vnd.github.diff;q=0.5": "diff",
+    "*/*;q=abc, application/vnd.github.diff;q=0.5": "diff",
+    "*/*;q=0.9, application/vnd.github.diff;q=0.5, application/vnd.github.patch": "diff",
 }
 
 
@@ -5385,42 +5406,44 @@ def test_github_pull_accept_patch_returns_an_mbox_patch(diff_pr):
 
 
 # What api.github.com served for each `Accept` beside a raw at 2022-11-28: the raw bytes on the
-# routes the second column names, the JSON envelope on the others (see `_wildcard_leads`).
-@pytest.mark.parametrize("route", ["contents", "readme", "blob"])
-@pytest.mark.parametrize(
-    "accept, raw_on",
-    [
-        ("*/*;q=0.9, application/vnd.github.raw;q=0.5", ()),
-        ("application/vnd.github.raw;q=0.5, */*;q=0.9", ()),
-        ("*/*;q=0.9x, application/vnd.github.raw;q=0.5", ()),
-        ("*/*;q=0.5, application/vnd.github.raw;q=0.5", ("contents", "readme", "blob")),
-        (
-            "application/json;q=0.9, application/vnd.github.raw;q=0.5",
-            ("contents", "readme", "blob"),
-        ),
-        ("text/html, */*;q=0.9, application/vnd.github.raw;q=0.5", ("contents", "readme", "blob")),
-        ("*;q=0.9, application/vnd.github.raw;q=0.5", ("contents", "readme", "blob")),
-        ("*/*;q=abc, application/vnd.github.raw;q=0.5", ("readme", "blob")),
-    ],
-)
-def test_github_raw_selection_respects_a_heavier_global_wildcard(
-    gh_client, gh_admin_h, gh_org, route, accept, raw_on
-):
+# routes each value names, the JSON envelope on the others (see `_wildcard_leads`).
+_RAW_BESIDE_A_WILDCARD = {
+    "*/*;q=0.9, application/vnd.github.raw;q=0.5": (),
+    "application/vnd.github.raw;q=0.5, */*;q=0.9": (),
+    "*/*;q=0.9x, application/vnd.github.raw;q=0.5": (),
+    "*/*;q=0.5, application/vnd.github.raw;q=0.5": ("contents", "readme", "blob"),
+    "application/json;q=0.9, application/vnd.github.raw;q=0.5": ("contents", "readme", "blob"),
+    "text/html, */*;q=0.9, application/vnd.github.raw;q=0.5": ("contents", "readme", "blob"),
+    "*;q=0.9, application/vnd.github.raw;q=0.5": ("contents", "readme", "blob"),
+    "*/*;q=abc, application/vnd.github.raw;q=0.5": ("readme", "blob"),
+}
+
+
+def test_github_raw_selection_respects_a_heavier_global_wildcard(gh_client, gh_admin_h, gh_org):
     c, _ = gh_client
-    body = _CODEBASE_README if route == "readme" else _MAIN_PY
-    path = {
-        "contents": "contents/src/main.py",
-        "readme": "readme",
-        "blob": "git/blobs/" + hashlib.sha1(_MAIN_PY.encode()).hexdigest(),
-    }[route]
-    response = c.get(
-        f"/github/repos/{gh_org}/codebase/{path}", headers={**gh_admin_h, "Accept": accept}
-    )
-    assert response.status_code == 200
-    if route in raw_on:
-        assert response.text == body
-    else:
-        assert base64.b64decode(response.json()["content"]).decode() == body
+    sha = hashlib.sha1(_MAIN_PY.encode()).hexdigest()
+    routes = {
+        "contents": ("contents/src/main.py", _MAIN_PY),
+        "readme": ("readme", _CODEBASE_README),
+        "blob": (f"git/blobs/{sha}", _MAIN_PY),
+    }
+    served = {}
+    for accept in _RAW_BESIDE_A_WILDCARD:
+        for route, (path, body) in routes.items():
+            h = {**gh_admin_h, "Accept": accept}
+            r = c.get(f"/github/repos/{gh_org}/codebase/{path}", headers=h)
+            if r.status_code != 200:
+                served[accept, route] = r.status_code
+            elif r.text == body:
+                served[accept, route] = "raw"
+            else:
+                envelope = base64.b64decode(r.json()["content"]).decode()
+                served[accept, route] = "json" if envelope == body else envelope[:20]
+    assert served == {
+        (accept, route): "raw" if route in raw_on else "json"
+        for accept, raw_on in _RAW_BESIDE_A_WILDCARD.items()
+        for route in routes
+    }
 
 
 def test_github_oversized_patch_is_omitted_from_json_but_kept_in_the_diff(diff_pr, monkeypatch):
