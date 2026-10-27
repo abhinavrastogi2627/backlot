@@ -1149,7 +1149,7 @@ def _accept_types(request: Request) -> list[str]:
     types: list[str] = []
     zero_diffs: set[int] = set()
     has_patch = False
-    for member in request.headers.get("accept", "").split(","):
+    for member in ",".join(request.headers.getlist("accept")).split(","):
         media_type, _, params = member.partition(";")
         media_type = media_type.strip()
         m = _GITHUB_MEDIA.fullmatch(media_type)
@@ -1221,16 +1221,19 @@ def _accept_q(params: str) -> str | None:
 def _q_weight(params: str, unread: float | None = None) -> float:
     """The weight a member's parameters give it: 1 with no `q`, else its `q` (:func:`_accept_q`)
     read as a finite number, else ``unread``, or with no ``unread`` the number the value starts
-    with, or 0 where it starts with none."""
+    with, or 0 where it starts with none. With ``unread`` a parsed NaN is kept: on contents, real
+    left `application/json;q=nan` after a preceding raw at q=0.5, and ahead of a following one.
+    On the pull and readme it ranked at zero (measured 2026-10-27)."""
     value = _accept_q(params)
     if value is None:
         return 1.0
     try:
         weight = float(value)
     except ValueError:
-        weight = math.nan
-    if math.isfinite(weight):
-        return weight
+        pass
+    else:
+        if math.isfinite(weight) or (unread is not None and math.isnan(weight)):
+            return weight
     if unread is not None:
         return unread
     lead = _Q_LEAD.match(value)
@@ -1240,12 +1243,18 @@ def _q_weight(params: str, unread: float | None = None) -> float:
 def _ordered_accept(request: Request, unread: float | None = None) -> list[tuple[str, float]]:
     """Members in the order `_representation_content_type` measures."""
     members = []
-    for member in request.headers.get("accept", "").split(","):
+    for member in ",".join(request.headers.getlist("accept")).split(","):
         media_type, _, params = member.partition(";")
-        media_type = media_type.strip()
-        if media_type:
-            members.append((media_type, _q_weight(params, unread)))
-    members.sort(key=lambda m: (-m[1], m[0].count("*")))
+        stripped = media_type.strip()
+        if stripped:
+            trailing = media_type[len(media_type.rstrip()) :]
+            members.append((stripped + "\t" * trailing.count("\t"), _q_weight(params, unread)))
+    # A NaN does not cross another member; the runs on either side still sort. All six
+    # permutations of nan, 0 and 0.5 on contents kept that boundary on 2026-10-27.
+    start = 0
+    for end in [i for i, (_, weight) in enumerate(members) if math.isnan(weight)] + [len(members)]:
+        members[start:end] = sorted(members[start:end], key=lambda m: (-m[1], m[0].count("*")))
+        start = end + 1
     return members
 
 
@@ -1263,7 +1272,7 @@ def _wildcard_leads(request: Request, unread: float | None = None) -> bool:
     (``unread`` 1) and not on the pull, the readme or the blob. Code search serves `text-match`
     beside a heavier `*/*` too, and does not ask."""
     members = _ordered_accept(request, unread)
-    return bool(members) and members[0][0] == "*/*"
+    return bool(members) and members[0][0].strip() == "*/*"
 
 
 def _representation_content_type(request: Request, unread: float | None = None) -> str:
@@ -1291,10 +1300,14 @@ def _representation_content_type(request: Request, unread: float | None = None) 
     `q=+0.9`, `q=inf` and `q=-0.9` it ranked as `q=0` does on the pull
     (`application/json;q=abc, text/plain;q=0, …` kept that order), and under those, `q= 0.9` and
     `q=nan` below a raw at `q=0.5` on the readme; on contents all of those seven but `q=nan` ranked
-    above the raw (``unread`` 1). Not modelled: `q=nan` on contents, and `*/ *`, which the pull
-    echoed as `*/`."""
+    above the raw (``unread`` 1).
+
+    Measured again on 2026-10-27 on the same pull and contents: trailing tabs in a member are
+    kept, unlike spaces and no-break spaces; `*/ *` is echoed as `*/`. Repeated `Accept` fields
+    are joined in their sent order for both selection and this header. A parsed NaN keeps its
+    measured order (:func:`_q_weight`) rather than getting contents' unread weight."""
     members = _ordered_accept(request, unread)
-    return ",".join(media_type for media_type, _ in members) + "; charset=utf-8"
+    return ",".join(media_type.split(" ", 1)[0] for media_type, _ in members) + "; charset=utf-8"
 
 
 def _raw_response(
