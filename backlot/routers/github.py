@@ -1149,9 +1149,8 @@ def _accept_types(request: Request) -> list[str]:
     types: list[str] = []
     zero_diffs: set[int] = set()
     has_patch = False
-    for member in ",".join(request.headers.getlist("accept")).split(","):
-        media_type, _, params = member.partition(";")
-        media_type = media_type.strip()
+    for member in _accept_members(request):
+        media_type, params = member[1], member[3] or ""
         m = _GITHUB_MEDIA.fullmatch(media_type)
         if m is not None:
             if m[2] == "diff" and _zero_q(params):
@@ -1219,11 +1218,12 @@ def _accept_q(params: str) -> str | None:
 
 
 def _q_weight(params: str, unread: float | None = None) -> float:
-    """The weight a member's parameters give it: 1 with no `q`, else its `q` (:func:`_accept_q`)
-    read as a finite number, else ``unread``, or with no ``unread`` the number the value starts
-    with, or 0 where it starts with none. With ``unread`` a parsed NaN is kept: on contents, real
-    left `application/json;q=nan` after a preceding raw at q=0.5, and ahead of a following one.
-    On the pull and readme it ranked at zero (measured 2026-10-27)."""
+    """The weight a member's parameters give it: 1 with no `q`; else with ``unread``, as on
+    contents, whatever ``float()`` reads of its `q` (:func:`_accept_q`), `inf` and `nan` too, and
+    ``unread`` where it reads nothing; else its `q` read as a finite number, the number the value
+    starts with, or 0 where it starts with none. Measured on 2026-10-27: on contents `q=inf` came
+    ahead of a member at 1 and `q=nan` stayed between the members on either side of it
+    (:func:`_ordered_accept`), and on the pull and the readme `q=nan` ranked at zero."""
     value = _accept_q(params)
     if value is None:
         return 1.0
@@ -1232,7 +1232,7 @@ def _q_weight(params: str, unread: float | None = None) -> float:
     except ValueError:
         pass
     else:
-        if math.isfinite(weight) or (unread is not None and math.isnan(weight)):
+        if unread is not None or math.isfinite(weight):
             return weight
     if unread is not None:
         return unread
@@ -1241,14 +1241,16 @@ def _q_weight(params: str, unread: float | None = None) -> float:
 
 
 def _ordered_accept(request: Request, unread: float | None = None) -> list[tuple[str, float]]:
-    """Members in the order `_representation_content_type` measures."""
+    """Members in the order `_representation_content_type` measures, each spelt as it echoes them:
+    with ``unread`` as contents does, without it as the pull and the readme do
+    (:data:`_ACCEPT_MEMBER`)."""
     members = []
-    for member in ",".join(request.headers.getlist("accept")).split(","):
-        media_type, _, params = member.partition(";")
-        stripped = media_type.strip()
-        if stripped:
-            trailing = media_type[len(media_type.rstrip()) :]
-            members.append((stripped + "\t" * trailing.count("\t"), _q_weight(params, unread)))
+    for m in _accept_members(request):
+        if unread is None:
+            echoed = m[1] + m[2].replace(" ", "")
+        else:
+            echoed = m[1] + m[2] if m[3] is not None else m[1]
+        members.append((echoed, _q_weight(m[3] or "", unread)))
     # A NaN does not cross another member; the runs on either side still sort. All six
     # permutations of nan, 0 and 0.5 on contents kept that boundary on 2026-10-27.
     start = 0
@@ -1256,6 +1258,27 @@ def _ordered_accept(request: Request, unread: float | None = None) -> list[tuple
         members[start:end] = sorted(members[start:end], key=lambda m: (-m[1], m[0].count("*")))
         start = end + 1
     return members
+
+
+# One `Accept` member as api.github.com read it on 2026-10-27 on `pulls/7619` of `psf/requests` and
+# its `README.md` through `readme` and `contents`: white space before it, its type (the visible
+# ASCII up to the first other character or `;`), spaces and tabs, and parameters only where a `;`
+# comes next. Anything else after the type ends the member, parameters and all: `diff x;q=0` was
+# the diff and `*/*\xa0;q=0.1` a `*/*` at full weight. Of those spaces and tabs the pull and the
+# readme echoed the tabs (`diff \t,` as `diff\t`, `diff\t\xa0\t,` as `diff\t`), and contents
+# echoed them all where a `;` came next and none where it did not (`raw \t;q=0.5` as `raw \t`,
+# `raw\t,` as `raw`).
+_ACCEPT_MEMBER = re.compile(r"([!-:<-~]*)([ \t]*)(?:;(.*))?", re.S)
+
+
+def _accept_members(request: Request) -> list[re.Match]:
+    """``Accept``'s members (:data:`_ACCEPT_MEMBER`), each header sent trimmed of spaces and tabs at
+    both ends and the headers joined with commas in the order sent: real answered `Accept` sent
+    twice as that one header, and echoed `application/json, application/vnd.github.diff` and a tab
+    without the tab."""
+    joined = ",".join(value.strip(" \t") for value in request.headers.getlist("accept"))
+    members = (_ACCEPT_MEMBER.match(member.lstrip()) for member in joined.split(","))
+    return [m for m in members if m[1]]
 
 
 def _wildcard_leads(request: Request, unread: float | None = None) -> bool:
@@ -1300,14 +1323,10 @@ def _representation_content_type(request: Request, unread: float | None = None) 
     `q=+0.9`, `q=inf` and `q=-0.9` it ranked as `q=0` does on the pull
     (`application/json;q=abc, text/plain;q=0, …` kept that order), and under those, `q= 0.9` and
     `q=nan` below a raw at `q=0.5` on the readme; on contents all of those seven but `q=nan` ranked
-    above the raw (``unread`` 1).
-
-    Measured again on 2026-10-27 on the same pull and contents: trailing tabs in a member are
-    kept, unlike spaces and no-break spaces; `*/ *` is echoed as `*/`. Repeated `Accept` fields
-    are joined in their sent order for both selection and this header. A parsed NaN keeps its
-    measured order (:func:`_q_weight`) rather than getting contents' unread weight."""
+    above the raw, `q=inf` as infinity and the rest at ``unread`` 1 (:func:`_q_weight`). A member's
+    spaces and tabs echo as :data:`_ACCEPT_MEMBER` says."""
     members = _ordered_accept(request, unread)
-    return ",".join(media_type.split(" ", 1)[0] for media_type, _ in members) + "; charset=utf-8"
+    return ",".join(media_type for media_type, _ in members) + "; charset=utf-8"
 
 
 def _raw_response(
