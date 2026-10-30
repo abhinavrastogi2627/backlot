@@ -778,9 +778,8 @@ async def serve_a_slashed_notion_path_as_the_path_without_it(request: Request, c
     otherwise claim every slashed spelling and answer 400 where real answers what the route
     answers.
 
-    The vendor root is not rewritten: `/notion/` is the URL's 400, and `/notion` is Starlette's own
-    307 to that, where real's `/` is a 302 to its marketing site — a page this server does not
-    serve at all.
+    The vendor root is not rewritten: both `/notion/` and `/notion` have their own route,
+    which answers the root's GET/HEAD/POST redirect to the marketing site.
 
     GitHub's trailing slash is the opposite rule and has its own middleware above; the two are
     measured separately because the vendors answer differently.

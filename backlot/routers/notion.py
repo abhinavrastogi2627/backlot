@@ -45,7 +45,7 @@ import re
 import uuid
 
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 from pydantic import BaseModel, ConfigDict
 
 from backlot import auth, express_http, published, store, synth
@@ -1486,6 +1486,19 @@ def _invalid_client(request: Request) -> JSONResponse:
 ROUTED_METHODS = ("GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS")
 
 
+@unmatched_router.api_route("", methods=["GET", "POST"])
+@unmatched_router.api_route("/", methods=["GET", "POST"])
+async def root() -> PlainTextResponse:
+    """api.notion.com on 2026-10-30: GET/HEAD/POST `/`, with a query or version header too,
+    redirect to the marketing site before checking a credential. HEAD has no response body.
+    """
+    return PlainTextResponse(
+        "Found. Redirecting to https://www.notion.so",
+        status_code=302,
+        headers={"Location": "https://www.notion.so"},
+    )
+
+
 @unmatched_router.api_route("/{rest:path}", methods=list(ROUTED_METHODS))
 async def unmatched_path(request: Request, rest: str) -> JSONResponse:
     """Notion's answer for a URL no route here serves: the credential's refusal where Notion
@@ -1521,13 +1534,11 @@ async def unmatched_path(request: Request, rest: str) -> JSONResponse:
     before routing, so a slashed spelling of a served path does not land here
     (`backlot.main.serve_a_slashed_notion_path_as_the_path_without_it`).
 
-    Not reproduced here: real's own root, `/`, a 302 to the marketing site, a page Backlot does not
-    serve; a path in another case, which real routes as the lower-case one (`GET /V1/USERS/ME`
+    Not reproduced here: a path in another case, which real routes as the lower-case one (`GET /V1/USERS/ME`
     and `PATCH /v1/Pages/{id}` were each the format's 401 on 2026-09-28) and this answers the URL's
     400; and a method outside the six that the front door passes on to the API, `PROPFIND` and
     `QUERY` among them, which real answered the URL's 400 on 2026-09-28 and this answers the
-    framework's 405. `/notion/` gets the URL's 400, and `/notion` is Starlette's 307 to it — the one
-    path under `/notion` where its slash redirect fires, since this route matches every other.
+    framework's 405. The root's GET/HEAD/POST redirect is served separately by :func:`root`.
     """
     path = request.url.path.removeprefix("/notion")
     if published.includes(_PUBLISHED_NOT_SERVED, request.method, path):

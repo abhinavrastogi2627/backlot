@@ -236,10 +236,30 @@ def test_notion_one_trailing_slash_is_the_path_without_it_and_two_is_not(client,
     assert searched.json() == client.post("/notion/v1/search", json={}, headers=notion_h).json()
     twice = client.get("/notion/v1/users/me//", headers=notion_h, follow_redirects=False)
     assert twice.status_code == 400 and twice.json()["code"] == "invalid_request_url"
-    root = client.get("/notion/", headers=notion_h, follow_redirects=False)
-    assert root.status_code == 400 and root.json()["code"] == "invalid_request_url"
-    bare = client.get("/notion", headers=notion_h, follow_redirects=False)
-    assert bare.status_code == 307 and bare.headers["location"].endswith("/notion/")
+    # notion.root records the measured redirect, including query/version variants.
+    observed = []
+    expected = []
+    for headers in ({}, notion_h):
+        for method in ("GET", "HEAD", "POST"):
+            for path in ("/notion", "/notion/", "/notion?x=1", "/notion/?x=1"):
+                root = client.request(method, path, headers=headers, follow_redirects=False)
+                observed.append(
+                    (
+                        root.status_code,
+                        root.headers.get("location"),
+                        root.headers.get("content-type"),
+                        root.content,
+                    )
+                )
+                expected.append(
+                    (
+                        302,
+                        "https://www.notion.so",
+                        "text/plain; charset=utf-8",
+                        b"" if method == "HEAD" else b"Found. Redirecting to https://www.notion.so",
+                    )
+                )
+    assert observed == expected
 
 
 def test_notion_a_slashed_path_is_acl_scoped_like_the_path_without_it(client, admin_h, tokens):
@@ -403,9 +423,9 @@ def test_notion_json_carries_the_charset_and_the_headers_real_sends(client, noti
         r = client.get(path)
         got = {name: r.headers.get(name) for name in bare}
         assert (r.headers["content-type"], got) == ("application/json", bare), path
-    # the vendor root is the framework's redirect, with no JSON body, and real's 302 has no tag
+    # The root's non-JSON redirect carries no entity tag.
     root = client.get("/notion", headers=notion_h, follow_redirects=False)
-    assert (root.status_code, root.headers.get("etag")) == (307, None)
+    assert (root.status_code, root.headers.get("etag")) == (302, None)
 
 
 def test_notion_answers_an_if_none_match_of_a_star_as_real_does(client, notion_h):
