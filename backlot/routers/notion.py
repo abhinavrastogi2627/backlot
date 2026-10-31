@@ -45,11 +45,12 @@ import re
 import uuid
 
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, ConfigDict
 
 from backlot import auth, express_http, published, store, synth
 from backlot import notion_request as req
+from backlot.graphql import apollo_http
 from backlot.graphql import body as request_body
 from backlot.openapi import qp
 
@@ -1486,16 +1487,36 @@ def _invalid_client(request: Request) -> JSONResponse:
 ROUTED_METHODS = ("GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS")
 
 
-@unmatched_router.api_route("", methods=["GET", "POST"])
-@unmatched_router.api_route("/", methods=["GET", "POST"])
-async def root() -> PlainTextResponse:
-    """api.notion.com on 2026-10-30: GET/HEAD/POST `/`, with a query or version header too,
-    redirect to the marketing site before checking a credential. HEAD has no response body.
+_MARKETING_SITE = "https://www.notion.so"
+_REDIRECTS = ("text/plain", "text/html")
+
+
+@unmatched_router.api_route("", methods=list(ROUTED_METHODS))
+@unmatched_router.api_route("/", methods=list(ROUTED_METHODS))
+async def root(request: Request) -> Response:
+    """Real's root: Express's redirect to the marketing site, with its request id and `vary`.
+
+    Measured against api.notion.com on 2026-10-31: the root answers the redirect to each routed
+    method. `Accept` chooses its plain-text or HTML body; it has no body or content type where it
+    takes neither, and ``apollo_http.preferred_media_type`` reproduces that negotiation.
     """
-    return PlainTextResponse(
-        "Found. Redirecting to https://www.notion.so",
+    accept = apollo_http.headers_seen(request.headers.raw).get("accept")
+    media_type = apollo_http.preferred_media_type(accept, _REDIRECTS) if accept else _REDIRECTS[0]
+    body = ""
+    if media_type == "text/plain":
+        body = f"Found. Redirecting to {_MARKETING_SITE}"
+    elif media_type == "text/html":
+        body = f'<p>Found. Redirecting to <a href="{_MARKETING_SITE}">{_MARKETING_SITE}</a></p>'
+    request_id = _request_id(request)
+    return Response(
+        body,
         status_code=302,
-        headers={"Location": "https://www.notion.so"},
+        headers={
+            "location": _MARKETING_SITE,
+            "vary": "Accept",
+            "x-notion-request-id": request_id,
+        },
+        media_type=media_type,
     )
 
 
@@ -1534,11 +1555,11 @@ async def unmatched_path(request: Request, rest: str) -> JSONResponse:
     before routing, so a slashed spelling of a served path does not land here
     (`backlot.main.serve_a_slashed_notion_path_as_the_path_without_it`).
 
-    Not reproduced here: a path in another case, which real routes as the lower-case one (`GET /V1/USERS/ME`
-    and `PATCH /v1/Pages/{id}` were each the format's 401 on 2026-09-28) and this answers the URL's
-    400; and a method outside the six that the front door passes on to the API, `PROPFIND` and
-    `QUERY` among them, which real answered the URL's 400 on 2026-09-28 and this answers the
-    framework's 405. The root's GET/HEAD/POST redirect is served separately by :func:`root`.
+    Not reproduced here: a path in another case, which real routes as the lower-case one
+    (`GET /V1/USERS/ME` and `PATCH /v1/Pages/{id}` were each the format's 401 on 2026-09-28) and
+    this answers the URL's 400; and a method outside the six that the front door passes on to the
+    API, `PROPFIND` and `QUERY` among them, which real answered the URL's 400 on 2026-09-28 and the
+    root's redirect on 2026-10-31 (:func:`root`), and this answers the framework's 405.
     """
     path = request.url.path.removeprefix("/notion")
     if published.includes(_PUBLISHED_NOT_SERVED, request.method, path):
