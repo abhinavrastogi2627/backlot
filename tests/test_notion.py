@@ -275,69 +275,89 @@ _ROOT_ACCEPT_ROWS = [
     (("text/plain; charset=utf-8",), None),
     (("text/plain;, text/html",), "text/plain"),
     (("text/html;charset=*",), "text/html"),
+    (('text/html;charset="*"',), "text/html"),
     (("text/html;charset=",), "text/html"),
+    (("text/html;charset=*;q=0.3, text/html;q=0.6, text/plain;q=0.5",), "text/plain"),
+    (("text/*;q=0.5, text/html",), "text/html"),
+    (("text/*;q=0.3, */html;q=0.6",), "text/plain"),
+    (("text/plain;q=0.4, text/html;q=0.5, text/html;q=0.1",), "text/html"),
+    (("text/html;Q=0.6, text/plain;q=0.5",), "text/html"),
+    (("text/html;q= 0.6, text/plain;q=0.5",), "text/html"),
+    (('text/html;q="0.9", text/plain;q=0.5',), "text/html"),
     (("text/html;q=abc",), None),
+    (("text/html, text/html;q=abc",), None),
     (("text/html;q=0.5abc, text/plain;q=0.4",), "text/html"),
+    (("text/html;q=1e1x, text/plain;q=2",), "text/html"),
     (("text/html;q=Infinity, text/plain;q=0.5",), "text/html"),
     (("text/html;q=infinity, text/plain;q=0.5",), "text/plain"),
+    (('text/html;q="1;x=y"',), "text/html"),
+    (('text/plain;a="x, text/html, y"',), None),
+    (('text/plain;a=", text/html',), None),
+    (('text/html;q="0;5", text/plain;q=0.5',), "text/plain"),
+    (('text/html;q="0,5", text/plain;q=0.5',), "text/plain"),
+    (("text/html;\xa0q=0.6, text/plain;q=0.5",), "text/html"),
+    (("text/html;q=\xa00.6, text/plain;q=0.5",), "text/html"),
+    (("text/html;\x85q=0.6, text/plain;q=0.5",), "text/plain"),
+    (("text/html;q=\x850.6, text/plain;q=0.5",), "text/plain"),
     (("\xa0text/html",), "text/html"),
     (("text/html\xa0",), "text/html"),
     (("text/html\x85",), None),
     (("application/json", "text/html"), "text/html"),
+    (("text/html", "application/json"), "text/html"),
     (("application/json", "application/xml"), None),
 ]
 
 
 def test_notion_the_root_redirects_to_the_marketing_site_as_real_does(client, notion_h):
-    """``notion.root`` on each method, spelling and recorded Accept value."""
-    observed = []
-    expected = []
+    """``notion.root`` on each method, with a credential and without, on both spellings of the
+    root and with a query, under the client's own `Accept: */*`; then each row of
+    ``_ROOT_ACCEPT_ROWS``, its header bytes as sent."""
+    site = "https://www.notion.so"
+    bodies = {
+        "text/plain": f"Found. Redirecting to {site}".encode(),
+        "text/html": f'<p>Found. Redirecting to <a href="{site}">{site}</a></p>'.encode(),
+        None: b"",
+    }
+
+    def answer(r):
+        return (
+            r.status_code,
+            r.headers.get("location"),
+            r.headers.get("content-type"),
+            r.headers.get("vary"),
+            r.headers.get("content-length"),
+            "x-notion-request-id" in r.headers,
+            r.content,
+        )
+
+    def expected(method, kind):
+        body = bodies[kind]
+        content_type = kind and f"{kind}; charset=utf-8"
+        vary = "Accept, Accept-Encoding" if kind else "Accept"
+        return (
+            302,
+            site,
+            content_type,
+            vary,
+            str(len(body)),
+            True,
+            b"" if method == "HEAD" else body,
+        )
+
+    observed, wanted = [], []
     for headers in ({}, notion_h):
         for method in ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"):
             for path in ("/notion", "/notion/", "/notion?x=1", "/notion/?x=1"):
-                root = client.request(method, path, headers=headers, follow_redirects=False)
-                observed.append(
-                    (
-                        root.status_code,
-                        root.headers.get("location"),
-                        root.headers.get("content-type"),
-                        root.headers.get("vary"),
-                        root.headers.get("content-length"),
-                        "x-notion-request-id" in root.headers,
-                        root.content,
-                    )
-                )
-                expected.append(
-                    (
-                        302,
-                        "https://www.notion.so",
-                        "text/plain; charset=utf-8",
-                        "Accept, Accept-Encoding",
-                        "43",
-                        True,
-                        b"" if method == "HEAD" else b"Found. Redirecting to https://www.notion.so",
-                    )
-                )
-    assert observed == expected
-    bodies = {
-        "text/plain": b"Found. Redirecting to https://www.notion.so",
-        "text/html": b'<p>Found. Redirecting to <a href="https://www.notion.so">https://www.notion.so</a></p>',
-        None: b"",
-    }
+                r = client.request(method, path, headers=headers, follow_redirects=False)
+                observed.append((method, path, bool(headers), answer(r)))
+                wanted.append((method, path, bool(headers), expected(method, "text/plain")))
     for accepts, kind in _ROOT_ACCEPT_ROWS:
         for method in ("GET", "HEAD", "POST"):
-            r = sent_as(client, method, "/notion/", [("accept", x) for x in accepts], bare=True)
-            assert (
-                r.status_code,
-                r.headers.get("content-type"),
-                r.headers.get("vary"),
-                r.content,
-            ) == (
-                302,
-                kind and f"{kind}; charset=utf-8",
-                "Accept, Accept-Encoding" if kind else "Accept",
-                b"" if method == "HEAD" else bodies[kind],
-            ), (method, accepts)
+            sent = [("accept", accept) for accept in accepts]
+            r = sent_as(client, method, "/notion/", sent, bare=True)
+            observed.append((method, accepts, answer(r)))
+            wanted.append((method, accepts, expected(method, kind)))
+    assert observed == wanted
 
 
 def test_notion_a_slashed_path_is_acl_scoped_like_the_path_without_it(client, admin_h, tokens):

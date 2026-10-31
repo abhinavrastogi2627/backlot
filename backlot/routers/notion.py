@@ -1488,18 +1488,26 @@ ROUTED_METHODS = ("GET", "POST", "PATCH", "PUT", "DELETE", "OPTIONS")
 
 
 _MARKETING_SITE = "https://www.notion.so"
+#: The types `res.redirect` writes its body in, in the order it asks `req.accepts` for them.
 _REDIRECTS = ("text/plain", "text/html")
 
 
 @unmatched_router.api_route("", methods=list(ROUTED_METHODS))
 @unmatched_router.api_route("/", methods=list(ROUTED_METHODS))
 async def root(request: Request) -> Response:
-    """Real's root: Express's redirect to the marketing site, with its request id and `vary`.
+    """Real's root: Express's `res.redirect` to its marketing site, a 302 with `vary: Accept` and
+    the request's id. Its body is in the type `Accept` takes first of `text/plain` and `text/html`,
+    `text/plain` where there is no `Accept`, and empty with no `content-type` where `Accept` takes
+    neither.
 
-    Measured against api.notion.com on 2026-10-31: the root answers the redirect to each routed
-    method. `Accept` chooses its plain-text or HTML body; it has no body or content type where it
-    takes neither, and ``apollo_http.preferred_media_type`` reproduces that negotiation.
-    """
+    Measured against api.notion.com on 2026-10-31: `/` and `/?x=1` answered that 302 to `HEAD` and
+    each of the six methods, with a token and a `Notion-Version` and with neither, and to a
+    preflight; a body the body reader refuses was its refusal instead.
+
+    Real's Express is read off its answers; Notion does not say which it runs. Its HTML body carries
+    the link Express 4.19.2 writes and 4.20.0 leaves out, and each `Accept` sent on 2026-10-31 drew
+    the type `negotiator` 0.6.3 picks, which 4.19.2 asks through `accepts` 1.3.8 and whose
+    `mediaType` reads `Accept` as 1.0.0's does (``apollo_http.preferred_media_type``)."""
     accept = apollo_http.headers_seen(request.headers.raw).get("accept")
     media_type = apollo_http.preferred_media_type(accept, _REDIRECTS) if accept else _REDIRECTS[0]
     body = ""

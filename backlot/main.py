@@ -805,8 +805,10 @@ async def report_notion_cors(request: Request, call_next):
     instead a 204 with no body and `vary: Origin`, ahead of the URL check. An `Origin` that is
     empty, a space or a tab counted as none, and on 2026-10-28 an `Origin` sent twice or three
     times counted when one of them had a value. On the other paths `Origin` changed nothing
-    (``notion.answers_cors`` has their `vary`). On 2026-10-28 the 304 an `If-None-Match: *` draws,
-    which carries no `content-type`, was `vary: Origin`, with the CORS headers as `Origin` asked.
+    (``notion.answers_cors`` has their `vary`), and on 2026-10-31 the root's `vary: Accept`
+    (``notion.root``) came first, with `Accept-Encoding` after it where the answer had a
+    `content-type`. On 2026-10-28 the 304 an `If-None-Match: *` draws, which carries no
+    `content-type`, was `vary: Origin`, with the CORS headers as `Origin` asked.
 
     Registered after ``serve_a_slashed_notion_path_as_the_path_without_it``,
     ``read_a_notion_body_as_express_does`` and ``report_notion_etag``, which makes it the outer of
